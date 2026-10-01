@@ -85,6 +85,9 @@ export async function render(view, { params, isCurrent }) {
   let result = null;
   let event = null;
   let pending = 0;
+  let liveGame = null;                 // идущая игра этой пары (из pari-mixer)
+  const provisional = new Map();       // account_id -> герой, назначенный предварительно
+  if (sel.autoLive === undefined) sel.autoLive = true;
   const save = () => store(storeKey, sel);
 
   const quickBox = h("div", { class: "quick hidden" });
@@ -162,6 +165,10 @@ export async function render(view, { params, isCurrent }) {
       h("button", { type: "button", class: `chip${p.a === sel.a && p.b === sel.b ? " active" : ""}`, onclick: () => {
         sel.a = p.a;
         sel.b = p.b;
+        liveGame = null;
+        liveSig = "";
+        provisional.clear();
+        pollLive();
         sel.manualOdds = false;
         sel.k_a = sel.k_b = null;
         save();
@@ -171,6 +178,41 @@ export async function render(view, { params, isCurrent }) {
         loadOdds();
       } }, h("span", { class: "faint" }, p.label, " "), `${teamByKey(p.a).name} — ${teamByKey(p.b).name}`)));
   }
+
+  // Живая игра: раз в 15 секунд берём драфт и время игры и подставляем героев.
+  const pairGame = (games) => (games || []).find((g) =>
+    [g.team_keys.radiant, g.team_keys.dire].sort().join("|") === pairKey()) || null;
+  let liveSig = "";
+  async function pollLive() {
+    if (!isCurrent()) { clearInterval(liveTimer); return; }
+    let data;
+    try {
+      data = await api(`/api/live${qs({ tournament_id: state.tournamentId })}`);
+    } catch (_) {
+      return;
+    }
+    if (!isCurrent()) return;
+    if (!data.enabled) { clearInterval(liveTimer); return; }
+    const game = pairGame(data.games);
+    const sig = JSON.stringify(game && [game.game_time, game.heroes, game.picks, sel.autoLive]);
+    if (sig === liveSig) return;
+    liveSig = sig;
+    liveGame = game;
+    provisional.clear();
+    if (game && sel.autoLive) {
+      const ours = new Set([...lineup(teamByKey(sel.a)), ...lineup(teamByKey(sel.b))]);
+      for (const x of game.heroes) {
+        if (!ours.has(x.account_id)) continue;
+        setHero(x.account_id, x.hero_id);
+        if (x.provisional) provisional.set(x.account_id, x.hero_id);
+      }
+      save();
+    }
+    paintAll();
+    runPredict();
+  }
+  const liveTimer = setInterval(pollLive, 15000);
+  pollLive();
 
   api(`/api/schedule${qs({ tournament_id: state.tournamentId })}`)
     .then((d) => { schedule = d.games || []; if (isCurrent()) paintQuick(); })
@@ -192,6 +234,9 @@ export async function render(view, { params, isCurrent }) {
   }
 
   function setTeam(side, key) {
+    liveGame = null;
+    liveSig = "";
+    provisional.clear();
     sel[side] = key;
     if (sel.a === sel.b) sel[side === "a" ? "b" : "a"] = (sorted.find((t) => t.key !== key) || {}).key;
     sel.manualOdds = false;
@@ -243,10 +288,13 @@ export async function render(view, { params, isCurrent }) {
       const heroId = draft()[p.account_id] ?? null;
       const hero = heroId ? state.heroById.get(heroId) : null;
       const pr = playerResult(side, p.account_id);
-      const slot = h("button", { type: "button", class: `hero-slot${hero ? " filled" : ""}`,
-        title: hero ? `${hero.name} — сменить` : "Выбрать героя",
+      const guess = hero && provisional.get(p.account_id) === heroId;
+      const slot = h("button", { type: "button", class: `hero-slot${hero ? " filled" : ""}${guess ? " provisional" : ""}`,
+        title: guess ? `${hero.name} — предварительно: капитан взял героя, но игрок ещё не выбран`
+          : hero ? `${hero.name} — сменить` : "Выбрать героя",
         onclick: () => openHeroPicker({ player: p, current: heroId, taken: takenHeroes(), onPick: (id) => {
           setHero(p.account_id, id);
+          provisional.delete(p.account_id);
           save();
           paintTeam(panel, side);
           runPredict();
@@ -317,7 +365,8 @@ export async function render(view, { params, isCurrent }) {
         runPredict();
         loadOdds();
       } }, "⇄ поменять");
-    resultBox.append(
+    resultBox.append(...[
+      liveStrip(),
       h("div", { class: "result-head" },
         h("div", { class: "winner" }, "Победа: ",
           h("span", { style: { color: winnerA ? "var(--team-a)" : "var(--team-b)" } }, winnerA ? ta.name : tb.name),
@@ -336,7 +385,25 @@ export async function render(view, { params, isCurrent }) {
           : h("span", null, "Драфт: выберите героев, чтобы учесть пики"),
         h("span", null, "Честные коэф.: ", h("b", null, `${fmt.odds(result.fair_odds.a)} / ${fmt.odds(result.fair_odds.b)}`))),
       draftBlock(ta, tb),
-      whyBlock(ta, tb));
+      whyBlock(ta, tb)].filter(Boolean));     // без драфта и LIVE — без пустых блоков
+  }
+
+  function liveStrip() {
+    if (!liveGame) return null;
+    const g = liveGame;
+    const clock = (t) => `${t < 0 ? "-" : ""}${Math.floor(Math.abs(t) / 60)}:${String(Math.abs(t) % 60).padStart(2, "0")}`;
+    const guesses = g.heroes.length - g.assigned;
+    const state = g.before_horn
+      ? `драфт: ${g.picks} из 10 пиков, у игроков ${g.assigned}${guesses ? ` (+${guesses} предварительно)` : ""} · до горна`
+      : `идёт игра ${clock(g.game_time)}, счёт ${g.score[0]}:${g.score[1]}`;
+    const toggle = h("a", { href: "#", onclick: (e) => {
+      e.preventDefault();
+      sel.autoLive = !sel.autoLive;
+      save();
+      liveSig = "";
+      pollLive();
+    } }, sel.autoLive ? "не подставлять героев" : "подставлять героев из игры");
+    return h("div", { class: "live-strip" }, h("span", { class: "badge bad" }, "LIVE"), " ", state, " · ", toggle);
   }
 
   // Из чего сложился драфт: каждый признак — сдвиг вероятности в пунктах.
@@ -443,14 +510,21 @@ export async function render(view, { params, isCurrent }) {
         h("button", { type: "button", class: `btn small ${s.value ? "good" : ""}`, style: { marginTop: "8px", width: "100%" },
           onclick: () => betForm(key === "a" ? "A" : "B") }, "Записать ставку"));
     };
-    oddsBox.append(
+    // Element.append(null) вставил бы текст «null»: пустые блоки отбрасываем
+    oddsBox.append(...[
+      offer.draft_window ? h("div", { class: "notice", style: { marginTop: "12px" } },
+        h("b", null, "Окно драфта. "),
+        "Драфт полный, а игра ещё не началась: прогноз уже знает героев, линия — ещё не ход игры. ",
+        "Перевес считаем до горна; время игры приходит с задержкой до 30 секунд.",
+        result.live && result.live.assigned < 10
+          ? ` Героев у игроков пока ${result.live.assigned} из 10, остальные назначены предварительно.` : "") : null,
       offer.in_play ? h("div", { class: "notice", style: { marginTop: "12px" } },
         h("b", null, "Игра уже идёт. "),
         "В лайве PARI двигает коэффициенты по ходу игры, а прогноз учитывает только составы и драфт, ",
         "поэтому перевес и ставку не предлагаем. Ожидание ниже верно разве что сразу после драфта.") : null,
       h("div", { class: "muted", style: { fontSize: "13px", marginTop: "12px" } },
         `Маржа PARI ${fmt.pct(offer.margin)}. Перевес считается, если ожидание не меньше порога из настроек ставок.`),
-      h("div", { class: "offer" }, sideBox("a", ta), sideBox("b", tb)));
+      h("div", { class: "offer" }, sideBox("a", ta), sideBox("b", tb))].filter(Boolean));
   }
 
   function betForm(pick) {

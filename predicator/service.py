@@ -15,6 +15,7 @@ from .external import ExternalData
 from .features import (ROSTER_FEATURES, History, Imputation, default_imputation, roster_features,
                        sigmoid)
 from .heroes import hero_by_id
+from .live import LiveFeed, comfort_fn, describe, link_game
 from .model import (CupRater, Norm, TrainedModel, comfort, draft_delta, hero_strength,
                     roster_score, train)
 from .rosters import Team, load_teams
@@ -259,6 +260,23 @@ class PredictorService:
         out["winner"] = "a" if p_final >= 0.5 else "b"
         out["fair_odds"] = {"a": round(1 / p_final, 3), "b": round(1 / (1 - p_final), 3)}
         out["series"] = series_probs(p_final)
+        return out
+
+    def live_games(self, conn: sqlite3.Connection, tournament_id: int, feed: LiveFeed) -> list[dict]:
+        """Идущие игры кубка с командами, временем и героями по игрокам."""
+        games = feed.games()
+        if not games:
+            return []
+        ctx = self.cup_context(conn, tournament_id)
+        active = conn.execute("SELECT match_id, team1_key, team2_key FROM live_games"
+                              " WHERE tournament_id = ? AND match_id IS NOT NULL",
+                              (tournament_id,)).fetchall()
+        comfort = comfort_fn(self.model.hist, self.model.ext)
+        out = []
+        for g in games:
+            sides = link_game(g, ctx.teams, active)
+            if sides:
+                out.append(describe(g, sides, comfort))
         return out
 
     def _matchup_notes(self, model: TrainedModel, a: list, b: list) -> list[dict]:

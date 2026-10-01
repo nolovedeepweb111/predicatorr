@@ -198,6 +198,8 @@ table.data td.num, table.data th.num { text-align: right; }
 .prob-lines { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
 .prob-lines b { color: var(--text); }
 .draft-box { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
+.live-strip { margin-bottom: 10px; font-size: 13px; color: var(--muted); }
+.hero-slot.provisional { outline: 2px dashed var(--team-a); outline-offset: -2px; opacity: 0.85; }
 .draft-box h3 { margin-top: 0; }
 .why { margin-top: 14px; }
 .why summary { cursor: pointer; color: var(--muted); font-size: 13px; }

@@ -31,6 +31,7 @@ from .rosters import (add_change, default_tournament, delete_change, ensure_loca
                       search_players, tournaments)
 from .service import PredictorService
 from .importer import backup_status
+from .live import LiveFeed
 from .sync import SyncThread, last_sync, sync_once
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -102,6 +103,7 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
     settings = settings or get_settings()
     service = PredictorService(settings)
     pari = PariLine(settings.pari_hosts, settings.pari_scope_market, settings.pari_cache_seconds)
+    live = LiveFeed(settings)
     sync = SyncThread(settings)
     backtest_cache: dict[str, dict] = {}
 
@@ -166,6 +168,7 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
             "sync": last_sync(conn),
             "sync_running": sync.running,
             "backup": backup_status(conn),
+            "live": live.status(),
             "pari": {**pari.status(), "enabled": settings.pari_enabled},
             "external": {**external_coverage(conn), "enabled": settings.external_enabled,
                          "stratz_token_set": bool(stratz_token(conn, settings))},
@@ -229,10 +232,35 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
                                   body.lineup_a, body.lineup_b, body.heroes_a, body.heroes_b)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        # Лайв: перевес считаем только до горна и с полным драфтом — дальше линия PARI
+        # учитывает ход игры, а прогноз нет. Время игры знает pari-mixer (Steam).
+        game = live_game_for(conn, body.tournament_id, body.team_a, body.team_b) if body.in_play else None
+        if game:
+            res["live"] = {k: game[k] for k in ("game_time", "picks", "assigned", "draft_complete",
+                                                 "before_horn")}
+        window = bool(game and game["before_horn"] and res["draft"] and res["draft"]["heroes"] == 10)
         if body.k_a and body.k_b:
             res["offer"] = bets_mod.Offer(body.k_a, body.k_b, res["p_a"]).analyse(
-                bets_mod.get_bet_settings(conn), in_play=body.in_play)
+                bets_mod.get_bet_settings(conn), in_play=body.in_play and not window)
+            res["offer"]["draft_window"] = window
         return res
+
+    def live_game_for(conn: sqlite3.Connection, tid: int, a: str, b: str) -> dict | None:
+        try:
+            games = service.live_games(conn, tid, live)
+        except (FetchError, RuntimeError):
+            return None
+        return next((g for g in games if set(g["team_keys"].values()) == {a, b}), None)
+
+    @app.get("/api/live")
+    def live_games(tournament_id: int | None = None,
+                   conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+        """Идущие игры кубка: команды, время, драфт и герои по игрокам (из pari-mixer)."""
+        if not live.enabled:
+            return {"enabled": False, "games": []}
+        require_model(conn)
+        tid = resolve_tournament(conn, tournament_id)
+        return {**live.status(), "tournament_id": tid, "games": service.live_games(conn, tid, live)}
 
     @app.post("/api/odds/analyse")
     def analyse(body: AnalyseIn, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
@@ -321,6 +349,10 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
                 pred = service.predict(conn, tid, ev["team1_key"], ev["team2_key"])
             except ValueError:
                 continue
+            game = live_game_for(conn, tid, ev["team1_key"], ev["team2_key"]) if ev["place"] == "live" else None
+            if game:
+                ev["live"] = {k: game[k] for k in ("game_time", "picks", "assigned", "draft_complete",
+                                                    "before_horn")}
             ev["lineup_a"] = ctx.teams[ev["team1_key"]].lineup[:5]
             ev["lineup_b"] = ctx.teams[ev["team2_key"]].lineup[:5]
             ev["p_a"] = pred["p_a"]

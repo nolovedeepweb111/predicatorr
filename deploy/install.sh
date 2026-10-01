@@ -14,6 +14,10 @@
 # ищет сам (начиная с 8100), чужие конфиги nginx не трогает, nginx не
 # перезапускает, а перечитывает, и только после успешного nginx -t.
 #
+# Если на этом же сервере стоит pari-mixer с локальной выгрузкой истории
+# (docs/pari-mixer-export.md), скрипт подключает её: читает из /etc/pari-mixer/env
+# только EXPORT_TOKEN и ничего там не меняет. Уже заданный источник не трогает.
+#
 # Без домена сайт откроется напрямую на http://IP:порт.
 # Переменные: PREDICATOR_AUTO_UPDATE=0 — без автообновления;
 # PREDICATOR_TAKEOVER=1 — если домен уже занят другим сайтом nginx, отключить тот сайт.
@@ -27,6 +31,8 @@ PORT="${PREDICATOR_PORT:-8100}"
 AUTO_UPDATE="${PREDICATOR_AUTO_UPDATE:-1}"
 TAKEOVER="${PREDICATOR_TAKEOVER:-0}"
 ACME_ROOT=/var/www/letsencrypt
+PM_ENV="${PREDICATOR_PARI_MIXER_ENV:-/etc/pari-mixer/env}"
+PM_EXPORT="${PREDICATOR_PARI_MIXER_EXPORT:-http://127.0.0.1:8000/api/export/backup}"
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m!! %s\033[0m\n' "$*"; }
@@ -173,6 +179,24 @@ EOF
     PORT="$moved"
   fi
   echo "порт сайта: $PORT"
+}
+
+# Свежая история прямо от pari-mixer вместо бэкапа на GitHub, который отстаёт на часы.
+connect_pari_mixer() {
+  local env_file="$APP_DIR/.env" token
+  if grep -qE '^PREDICATOR_BACKUP_(URL|TOKEN)=' "$env_file"; then
+    return 0
+  fi
+  [ -r "$PM_ENV" ] || return 0
+  token="$({ grep -E '^EXPORT_TOKEN=' "$PM_ENV" || true; } | head -n 1 | cut -d= -f2- | tr -d "\r\"'")"
+  [ -n "$token" ] || return 0
+  # токен — заголовком из stdin, чтобы не светить его в списке процессов
+  if printf 'X-Export-Token: %s\n' "$token" | curl -fsS -o /dev/null -m 20 -H @- "$PM_EXPORT"; then
+    printf 'PREDICATOR_BACKUP_URL=%s\nPREDICATOR_BACKUP_TOKEN=%s\n' "$PM_EXPORT" "$token" >> "$env_file"
+    echo "история матчей: локальная выгрузка pari-mixer ($PM_EXPORT)"
+  else
+    warn "pari-mixer: $PM_EXPORT не ответил с токеном — история пока с GitHub"
+  fi
 }
 
 install_service() {
@@ -364,6 +388,7 @@ main() {
   install_packages
   install_code
   write_env
+  connect_pari_mixer
   install_service
   install_nginx
 

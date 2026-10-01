@@ -70,7 +70,9 @@ function lineCard(odds, settings) {
         ? h("div", { class: "faint", style: { fontSize: "12px" } }, `открытие ${fmt.odds(ev.opening.k1)} / ${fmt.odds(ev.opening.k2)}`) : null;
       return h("tr", { class: best ? "value-row" : "" },
         h("td", { class: "nowrap", "data-label": "Начало" }, h("span", null, fmt.time(ev.start_time),
-          ev.place === "live" ? h("span", { class: "badge bad", style: { marginLeft: "6px" } }, "LIVE") : null)),
+          ev.place === "live" ? h("span", { class: "badge bad", style: { marginLeft: "6px" } }, "LIVE") : null,
+          ev.live ? h("div", { class: "faint", style: { fontSize: "12px" } }, ev.live.before_horn
+            ? `драфт ${ev.live.picks}/10` : `игра ${Math.max(0, Math.floor(ev.live.game_time / 60))} мин`) : null)),
         h("td", { class: "event-teams cell-main" }, h("b", null, ev.team1), h("b", null, ev.team2),
           ev.blocked ? h("span", { class: "badge" }, "приём приостановлен") : null),
         h("td", { class: "num", "data-label": "Коэф. PARI" }, h("span", null, `${fmt.odds(ev.k1)} / ${fmt.odds(ev.k2)}`, opening)),

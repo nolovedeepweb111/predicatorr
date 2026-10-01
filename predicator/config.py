@@ -77,6 +77,8 @@ class Settings:
     # Откуда брать бэкап, если backup_url не отвечает.
     backup_fallback_url: str = field(default_factory=lambda: _env(
         "PREDICATOR_BACKUP_FALLBACK_URL", GITHUB_BACKUP_URL))
+    # Живые игры (драфт, время) из pari-mixer; пусто — рядом с локальной выгрузкой бэкапа.
+    live_url: str = field(default_factory=lambda: _env("PREDICATOR_LIVE_URL", ""))
     # Полный проход (с метой, матчапами и историей игроков) — раз в N минут; 0 — только по кнопке.
     sync_minutes: int = field(default_factory=lambda: int(_env("PREDICATOR_SYNC_MINUTES", "15")))
     # Между полными — быстрые проходы: бэкап (с ETag), mixer-cup, закрытие ставок; 0 — без них.
