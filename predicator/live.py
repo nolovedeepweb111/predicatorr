@@ -137,16 +137,18 @@ def describe(game: dict, sides: dict[str, str], comfort) -> dict:
     radiant, dire = _sides(game)
     picks = [x for x in game.get("picks_bans") or [] if x.get("is_pick") and x.get("hero_id")]
     heroes = assign_heroes(game, comfort)
+    clock = game.get("game_time")
+    clock = None if clock is None else int(clock)          # Steam отдаёт секунды дробью
     return {
         "match_id": game.get("match_id"), "league_id": game.get("league_id"),
         "team_keys": sides, "lineups": {"radiant": radiant, "dire": dire},
-        "game_time": game.get("game_time"),
+        "game_time": clock,
         "score": [game.get("radiant_score"), game.get("dire_score")],
         "picks": len(picks), "bans": sum(1 for x in game.get("picks_bans") or [] if not x.get("is_pick")),
         "heroes": heroes,
         "assigned": sum(1 for h in heroes if not h["provisional"]),
         "draft_complete": len(picks) >= 10,
-        "before_horn": game.get("game_time") is not None and game["game_time"] <= 0,
+        "before_horn": clock is not None and clock <= 0,
     }
 
 

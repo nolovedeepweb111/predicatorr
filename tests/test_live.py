@@ -41,6 +41,15 @@ def test_link_by_mixer_game_and_by_roster(conn):
     assert link_game(stranger, teams) is None
 
 
+def test_game_clock_is_whole_seconds(conn):
+    teams = {t.key: t for t in load_teams(conn, CURRENT_CUP)}
+    a, b = list(teams.values())[:2]
+    from predicator.live import describe
+    g = describe(make_game(a.lineup[:5], b.lineup[:5], game_time=1090.0667), {"radiant": a.key, "dire": b.key},
+                 lambda acc, hero: 0.0)
+    assert g["game_time"] == 1090 and g["before_horn"] is False
+
+
 def test_heroes_known_and_provisional():
     game = make_game([1, 2, 3, 4, 5], [6, 7, 8, 9, 10], heroes={1: 11, 6: 12},
                      picks={True: [11, 21, 22], False: [12, 31]})
