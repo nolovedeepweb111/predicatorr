@@ -10,16 +10,22 @@
 # (можно без аргументов): обновляет код и перезапускает сайт, база, пароль и
 # домен остаются.
 #
-# Без домена сайт откроется напрямую на http://IP:8000.
-# Переменные: PREDICATOR_AUTO_UPDATE=0 — без автообновления.
+# Скрипт рассчитан на сервер, где уже живут другие сайты: свободный порт он
+# ищет сам (начиная с 8100), чужие конфиги nginx не трогает, nginx не
+# перезапускает, а перечитывает, и только после успешного nginx -t.
+#
+# Без домена сайт откроется напрямую на http://IP:порт.
+# Переменные: PREDICATOR_AUTO_UPDATE=0 — без автообновления;
+# PREDICATOR_TAKEOVER=1 — если домен уже занят другим сайтом nginx, отключить тот сайт.
 
 set -euo pipefail
 
 REPO="${PREDICATOR_REPO:-https://github.com/nolovedeepweb111/predicatorr.git}"
 APP_DIR="${PREDICATOR_DIR:-/opt/predicatorr}"
 APP_USER="${PREDICATOR_USER:-predicatorr}"
-PORT="${PREDICATOR_PORT:-8000}"
+PORT="${PREDICATOR_PORT:-8100}"
 AUTO_UPDATE="${PREDICATOR_AUTO_UPDATE:-1}"
+TAKEOVER="${PREDICATOR_TAKEOVER:-0}"
 ACME_ROOT=/var/www/letsencrypt
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
@@ -28,6 +34,57 @@ die() { printf '\n\033[1;31mОшибка: %s\033[0m\n' "$*" >&2; exit 1; }
 as_app() { runuser -u "$APP_USER" -- env HOME="$APP_DIR" "$@"; }
 
 python_ok() { "$1" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; }
+
+# 0 — порт слушает кто-то, кроме нашего сайта (свой процесс узнаём по пользователю).
+port_taken() {
+  local line pid
+  line="$(ss -ltnpH "sport = :$1" 2>/dev/null | head -1)"
+  [ -n "$line" ] || return 1
+  pid="$(sed -nE 's/.*pid=([0-9]+).*/\1/p' <<<"$line" | head -1)"
+  if [ -n "$pid" ] && [ "$(ps -o user= -p "$pid" | tr -d ' ')" = "$APP_USER" ]; then
+    return 1
+  fi
+  return 0
+}
+
+pick_port() {
+  local p="$1"
+  while port_taken "$p"; do p=$((p + 1)); done
+  echo "$p"
+}
+
+# Порты 80 и 443 должен держать nginx (или никто): иначе ставить nginx нельзя.
+check_web_ports() {
+  [ -n "$DOMAIN" ] || return 0
+  local p line
+  for p in 80 443; do
+    line="$(ss -ltnpH "sport = :$p" 2>/dev/null | head -1)"
+    [ -n "$line" ] || continue
+    if ! grep -q '"nginx"' <<<"$line"; then
+      die "порт $p занят не nginx ($(sed -nE 's/.*users:\(\("([^"]+)".*/\1/p' <<<"$line")). Пришлите это сообщение — подстроим установку под ваш веб-сервер."
+    fi
+  done
+}
+
+# Другие сайты nginx, которые уже отвечают на наш домен.
+domain_conflicts() {
+  local pattern f
+  pattern="server_name[^;]*[[:space:]]${DOMAIN//./\\.}([[:space:];]|$)"
+  { grep -RlsE "$pattern" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null || true; } |
+    while read -r f; do
+      [ "$(readlink -f "$f")" = /etc/nginx/sites-available/predicatorr ] || echo "$f"
+    done
+}
+
+nginx_apply() {
+  nginx -t -q || die "nginx не принял конфигурацию, ничего не перечитываю (sudo nginx -t покажет причину)"
+  if systemctl is-active --quiet nginx; then
+    systemctl reload nginx
+  else
+    systemctl enable --quiet nginx
+    systemctl start nginx
+  fi
+}
 
 install_packages() {
   log "Пакеты"
@@ -86,6 +143,7 @@ write_env() {
   if [ ! -f "$env_file" ]; then
     log "Настройки и пароль"
     local password
+    PORT="$(pick_port "$PORT")"
     password="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 16)"
     cat > "$env_file" <<EOF
 PREDICATOR_HOST=$host
@@ -104,9 +162,17 @@ EOF
   fi
   chown "$APP_USER": "$env_file"
   chmod 600 "$env_file"
-  PASSWORD="$(grep -E '^PREDICATOR_PASSWORD=' "$env_file" | cut -d= -f2-)"
-  PORT="$(grep -E '^PREDICATOR_PORT=' "$env_file" | cut -d= -f2-)"
-  PORT="${PORT:-8000}"
+  PASSWORD="$(grep -E '^PREDICATOR_PASSWORD=' "$env_file" | cut -d= -f2- || true)"
+  PORT="$(grep -E '^PREDICATOR_PORT=' "$env_file" | cut -d= -f2- || true)"
+  PORT="${PORT:-8100}"
+  if port_taken "$PORT"; then
+    local moved
+    moved="$(pick_port 8100)"
+    warn "порт $PORT занят другой программой — сайт переезжает на $moved"
+    sed -i "s|^PREDICATOR_PORT=.*|PREDICATOR_PORT=$moved|" "$env_file"
+    PORT="$moved"
+  fi
+  echo "порт сайта: $PORT"
 }
 
 install_service() {
@@ -125,8 +191,10 @@ Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 NoNewPrivileges=true
-ProtectSystem=full
 PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=$APP_DIR/var
 
 [Install]
 WantedBy=multi-user.target
@@ -224,15 +292,31 @@ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
 proxy_read_timeout 180s;
 EOF
+  local conflicts f
+  conflicts="$(domain_conflicts)"
+  if [ -n "$conflicts" ]; then
+    if [ "$TAKEOVER" != "1" ]; then
+      die "домен $DOMAIN уже обслуживает другой сайт nginx: $(echo "$conflicts" | tr '\n' ' ')
+Если его нужно заменить нашим, запустите установку с PREDICATOR_TAKEOVER=1."
+    fi
+    mkdir -p /etc/nginx/disabled-by-predicatorr
+    while read -r f; do
+      if [ -L "$f" ]; then
+        rm "$f"
+        warn "отключён сайт nginx $f (файл остался в sites-available, вернуть: ln -s)"
+      else
+        mv "$f" /etc/nginx/disabled-by-predicatorr/
+        warn "отключён сайт nginx $f → /etc/nginx/disabled-by-predicatorr/"
+      fi
+    done <<<"$conflicts"
+  fi
   if [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then nginx_https; else nginx_http_only; fi
   ln -sf /etc/nginx/sites-available/predicatorr /etc/nginx/sites-enabled/predicatorr
   # Без IPv6 стандартный сайт nginx (listen [::]:80) не даёт ему запуститься.
   if [ ! -e /proc/net/if_inet6 ] && [ -f /etc/nginx/sites-available/default ]; then
     sed -i -E 's/^([[:space:]]*listen[[:space:]]+\[::\]:)/# \1/' /etc/nginx/sites-available/default
   fi
-  nginx -t -q || die "nginx не принял конфигурацию (sudo nginx -t покажет причину)"
-  systemctl enable --quiet nginx
-  systemctl restart nginx
+  nginx_apply
 
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
     ufw allow 80/tcp >/dev/null
@@ -244,7 +328,7 @@ EOF
         --register-unsafely-without-email --keep-until-expiring \
         --deploy-hook "systemctl reload nginx" >/tmp/predicatorr-certbot.log 2>&1; then
       nginx_https
-      nginx -t -q && systemctl reload nginx
+      nginx_apply
       HTTPS=1
     else
       warn "Сертификат не выпущен (лог: /tmp/predicatorr-certbot.log). Сайт пока работает по http://$DOMAIN."
@@ -276,6 +360,7 @@ main() {
   command -v apt-get >/dev/null || die "скрипт рассчитан на Ubuntu/Debian"
   command -v systemctl >/dev/null || die "нужен systemd"
 
+  check_web_ports
   install_packages
   install_code
   write_env

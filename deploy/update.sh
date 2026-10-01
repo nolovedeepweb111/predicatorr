@@ -20,7 +20,7 @@ healthy() {
   port="$(env_value PREDICATOR_PORT)"
   password="$(env_value PREDICATOR_PASSWORD)"
   for _ in $(seq 1 90); do
-    body="$(curl -s -f -u "admin:$password" "http://127.0.0.1:${port:-8000}/api/status" || true)"
+    body="$(curl -s -f -u "admin:$password" "http://127.0.0.1:${port:-8100}/api/status" || true)"
     case "$body" in *'"ready":true'*) return 0 ;; esac
     sleep 1
   done
