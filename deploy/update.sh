@@ -8,6 +8,8 @@ set -euo pipefail
 
 APP_DIR="${PREDICATOR_DIR:-/opt/predicatorr}"
 APP_USER="${PREDICATOR_USER:-predicatorr}"
+PM_ENV="${PREDICATOR_PARI_MIXER_ENV:-/etc/pari-mixer/env}"
+PM_EXPORT="${PREDICATOR_PARI_MIXER_EXPORT:-http://127.0.0.1:8000/api/export/backup}"
 
 as_app() { runuser -u "$APP_USER" -- env HOME="$APP_DIR" "$@"; }
 git_app() { as_app git -C "$APP_DIR" "$@"; }
@@ -27,6 +29,23 @@ healthy() {
   return 1
 }
 
+# Свежая история прямо от pari-mixer (docs/pari-mixer-export.md): из его настроек берём
+# только EXPORT_TOKEN. Возвращает 0, только если дописал источник в .env.
+connect_pari_mixer() {
+  local env_file="$APP_DIR/.env" token
+  [ -f "$env_file" ] || return 1
+  if grep -qE '^PREDICATOR_BACKUP_(URL|TOKEN)=' "$env_file"; then
+    return 1
+  fi
+  [ -r "$PM_ENV" ] || return 1
+  token="$({ grep -E '^EXPORT_TOKEN=' "$PM_ENV" || true; } | head -n 1 | cut -d= -f2- | tr -d "\r\"'")"
+  [ -n "$token" ] || return 1
+  # токен — заголовком из stdin, чтобы не светить его в списке процессов
+  printf 'X-Export-Token: %s\n' "$token" | curl -fs -o /dev/null -m 20 -H @- "$PM_EXPORT" || return 1
+  printf 'PREDICATOR_BACKUP_URL=%s\nPREDICATOR_BACKUP_TOKEN=%s\n' "$PM_EXPORT" "$token" >> "$env_file"
+  echo "история матчей: подключена локальная выгрузка pari-mixer"
+}
+
 deploy() {
   local rev="$1"
   git_app reset --hard --quiet "$rev"
@@ -37,6 +56,11 @@ deploy() {
 
 main() {
   local bad_file="$APP_DIR/var/bad-commit" old new
+  # каждый запуск таймера, а не только при новом коммите: pari-mixer может появиться позже
+  if connect_pari_mixer; then
+    systemctl restart predicatorr
+    healthy || echo "после подключения выгрузки сайт не ответил за полторы минуты" >&2
+  fi
   git_app fetch --quiet origin
   git_app remote set-head origin --auto >/dev/null
   old="$(git_app rev-parse HEAD)"
