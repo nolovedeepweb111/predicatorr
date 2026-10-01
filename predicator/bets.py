@@ -60,9 +60,11 @@ class Offer:
             return 0.0
         return max(0.0, (p * k - 1) / (k - 1))
 
-    def analyse(self, settings: dict[str, float]) -> dict:
+    def analyse(self, settings: dict[str, float], in_play: bool = False) -> dict:
+        """in_play — игра уже идёт: линия учитывает ход игры, а прогноз нет, поэтому
+        ожидание показываем, но перевеса и ставки не предлагаем."""
         out = {"margin": round(self.margin, 4), "book_p_a": round(self.book_a, 4),
-               "model_p_a": round(self.p_a, 4), "sides": {}}
+               "model_p_a": round(self.p_a, 4), "in_play": in_play, "sides": {}}
         best = None
         for side, k in (("a", self.k_a), ("b", self.k_b)):
             ev = self.ev(side)
@@ -70,14 +72,15 @@ class Offer:
             stake_frac = min(full * settings["kelly_fraction"], settings["max_stake_pct"])
             stake = float(round(settings["bankroll"] * stake_frac))   # ставят целыми рублями
             p = self.p_a if side == "a" else 1 - self.p_a
+            value = ev >= settings["min_edge"] and not in_play
             info = {
                 "odds": k, "model_p": round(p, 4),
                 "book_p": round(self.book_a if side == "a" else 1 - self.book_a, 4),
                 "fair_odds": round(1 / p, 3) if p > 0 else None,
                 "min_odds": round((1 + settings["min_edge"]) / p, 3) if p > 0 else None,
                 "ev": round(ev, 4), "kelly": round(full, 4),
-                "stake": stake if ev >= settings["min_edge"] else 0.0,
-                "value": ev >= settings["min_edge"],
+                "stake": stake if value else 0.0,
+                "value": value,
             }
             out["sides"][side] = info
             if info["value"] and (best is None or ev > out["sides"][best]["ev"]):

@@ -128,7 +128,12 @@ export async function render(view, { params, isCurrent }) {
     try {
       const body = { tournament_id: state.tournamentId, team_a: sel.a, team_b: sel.b,
         lineup_a: lineup(ta), lineup_b: lineup(tb), heroes_a: heroesFor(ta), heroes_b: heroesFor(tb) };
-      if (sel.k_a > 1 && sel.k_b > 1) { body.k_a = sel.k_a; body.k_b = sel.k_b; }
+      if (sel.k_a > 1 && sel.k_b > 1) {
+        body.k_a = sel.k_a;
+        body.k_b = sel.k_b;
+        // коэффициенты из лайва: игра идёт, и линия уже учитывает её ход
+        body.in_play = Boolean(event && !sel.manualOdds && event.ev.place === "live");
+      }
       const res = await api("/api/predict", { method: "POST", body });
       if (token !== pending || !isCurrent()) return;
       result = res;
@@ -439,6 +444,10 @@ export async function render(view, { params, isCurrent }) {
           onclick: () => betForm(key === "a" ? "A" : "B") }, "Записать ставку"));
     };
     oddsBox.append(
+      offer.in_play ? h("div", { class: "notice", style: { marginTop: "12px" } },
+        h("b", null, "Игра уже идёт. "),
+        "В лайве PARI двигает коэффициенты по ходу игры, а прогноз учитывает только составы и драфт, ",
+        "поэтому перевес и ставку не предлагаем. Ожидание ниже верно разве что сразу после драфта.") : null,
       h("div", { class: "muted", style: { fontSize: "13px", marginTop: "12px" } },
         `Маржа PARI ${fmt.pct(offer.margin)}. Перевес считается, если ожидание не меньше порога из настроек ставок.`),
       h("div", { class: "offer" }, sideBox("a", ta), sideBox("b", tb)));

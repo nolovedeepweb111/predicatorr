@@ -62,6 +62,8 @@ function lineCard(odds, settings) {
         const label = `Ожидание ${key === "a" ? "П1" : "П2"}`;
         if (!offer) return h("td", { class: "num faint", "data-label": label }, "—");
         const s = offer.sides[key];
+        // в лайве линия учитывает ход игры, а прогноз нет — ожидание не показываем
+        if (offer.in_play) return h("td", { class: "num faint", "data-label": label, title: "игра идёт" }, "—");
         return h("td", { class: `num ${s.ev > 0 ? "ev-pos" : "ev-neg"}`, "data-label": label }, fmt.signedPct(s.ev));
       };
       const opening = ev.opening && (ev.opening.k1 !== ev.k1 || ev.opening.k2 !== ev.k2)
@@ -95,7 +97,8 @@ function lineCard(odds, settings) {
       h("tbody", null, rows))));
     card.append(h("p", { class: "muted", style: { fontSize: "12px", marginBottom: 0 } },
       `Прогноз здесь — до драфта, по текущим составам. Перевес — ожидание от ${fmt.pct(settings.min_edge, 0)} на рубль. `,
-      "После драфта откройте «Прогноз» и выберите героев — вероятность уточнится."));
+      "После драфта откройте «Прогноз» и выберите героев — вероятность уточнится. ",
+      "Во время игры (LIVE) перевес не считаем: линия учитывает ход игры, а прогноз — нет."));
   }
   if (other.length) {
     card.append(h("details", { style: { marginTop: "12px" } },

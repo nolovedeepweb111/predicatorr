@@ -21,6 +21,14 @@ def test_offer_math():
     assert res["sides"]["b"]["stake"] == 0.0
 
 
+def test_no_value_suggested_in_play():
+    # игра идёт: коэффициенты уже учли её ход, прогноз до начала — нет
+    res = Offer(k_a=2.43, k_b=1.54, p_a=0.58).analyse(DEFAULTS, in_play=True)
+    assert res["in_play"] and res["best"] is None
+    assert res["sides"]["a"]["ev"] > 0.3 and not res["sides"]["a"]["value"]
+    assert res["sides"]["a"]["stake"] == 0.0
+
+
 def test_no_value_when_edge_below_threshold():
     res = Offer(k_a=1.90, k_b=1.90, p_a=0.53).analyse(DEFAULTS)   # ev = +0.7%
     assert res["best"] is None and not res["sides"]["a"]["value"]

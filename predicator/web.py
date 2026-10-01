@@ -46,6 +46,7 @@ class PredictIn(BaseModel):
     heroes_b: list[int | None] | None = None
     k_a: float | None = Field(None, gt=1.0)
     k_b: float | None = Field(None, gt=1.0)
+    in_play: bool = False             # коэффициенты из лайва: игра уже идёт
 
 
 class AnalyseIn(BaseModel):
@@ -228,7 +229,7 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
             raise HTTPException(400, str(exc)) from exc
         if body.k_a and body.k_b:
             res["offer"] = bets_mod.Offer(body.k_a, body.k_b, res["p_a"]).analyse(
-                bets_mod.get_bet_settings(conn))
+                bets_mod.get_bet_settings(conn), in_play=body.in_play)
         return res
 
     @app.post("/api/odds/analyse")
@@ -324,7 +325,8 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
             ev["prediction"] = {"p_a": pred["p_a"], "fair_odds": pred["fair_odds"],
                                 "series": pred["series"]}
             if ev["k1"] and ev["k2"] and not ev["blocked"]:
-                ev["offer"] = bets_mod.Offer(ev["k1"], ev["k2"], pred["p_a"]).analyse(bet_settings)
+                ev["offer"] = bets_mod.Offer(ev["k1"], ev["k2"], pred["p_a"]).analyse(
+                    bet_settings, in_play=ev["place"] == "live")
         return {"enabled": True, "error": error, "status": pari.status(), "tournament_id": tid,
                 "events": events}
 
