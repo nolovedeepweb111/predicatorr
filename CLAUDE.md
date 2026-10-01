@@ -23,6 +23,8 @@ JS-модулях без сборки. Интерфейс и тексты — н
 | `predicator/web.py` | API и раздача фронтенда |
 | `predicator/static/` | `index.html`, `app.css`, `js/*.js` (страницы predict, rosters, bets, model) |
 | `tests/` | pytest на синтетическом бэкапе (`tests/synthetic.py`), сеть не нужна |
+| `deploy/install.sh` | установка/обновление на сервере: systemd, nginx + Let's Encrypt, пароль |
+| `deploy/update.sh` | автообновление по таймеру: новый коммит → установка → проверка → откат |
 
 ## Правила, без которых данные врут
 
@@ -34,6 +36,15 @@ JS-модулях без сборки. Интерфейс и тексты — н
   `match_players`.
 - У старой копии mixer-cup (`api.mixer-cup.gg`) нет полей недель — не добавлять
   их в запросы к ней.
+
+## Деплой
+
+Сайт живёт на `https://mixer-predicts.duckdns.org` (`/opt/predicatorr`, служба
+`predicatorr`). Сервер сам раз в 5 минут ставит то, что лежит в основной ветке
+GitHub, поэтому всё, что туда попадает, через несколько минут уже в работе. Перед
+слиянием в основную ветку — `python -m pytest` и `python -m predicator backtest`.
+Если новая версия не поднимается (`/api/status` без `"ready":true` полторы
+минуты), сервер откатывается и запоминает коммит в `var/bad-commit`.
 
 ## Как менять модель
 

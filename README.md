@@ -42,19 +42,33 @@ python -m predicator import backup.json        # загрузить бэкап �
 
 ## Установка на сервер
 
+Нужен сервер с Ubuntu 22.04+ или Debian 12 и домен, который указывает на его
+IP (например, бесплатный DuckDNS). Одна команда от root:
+
 ```bash
-sudo mkdir -p /opt/predicatorr && sudo chown $USER /opt/predicatorr
-git clone https://github.com/nolovedeepweb111/predicatorr /opt/predicatorr
-cd /opt/predicatorr && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env        # задайте PREDICATOR_PASSWORD, если сайт смотрит в интернет
-# служба запустится от вашего пользователя (он владелец /opt/predicatorr)
-sed "s/^User=.*/User=$USER/" deploy/predicatorr.service | sudo tee /etc/systemd/system/predicatorr.service
-sudo systemctl daemon-reload && sudo systemctl enable --now predicatorr
+curl -fsSL https://raw.githubusercontent.com/nolovedeepweb111/predicatorr/HEAD/deploy/install.sh \
+  | sudo bash -s -- mixer-predicts.duckdns.org
 ```
 
-По умолчанию сайт слушает `127.0.0.1:8000`. Наружу его лучше отдавать через
-nginx с HTTPS. Если `PREDICATOR_PASSWORD` задан, браузер спросит пароль (имя
-пользователя любое).
+Скрипт [`deploy/install.sh`](deploy/install.sh) ставит пакеты, заводит
+системного пользователя `predicatorr` и кладёт код в `/opt/predicatorr`. Потом
+он поднимает службу systemd, настраивает nginx с HTTPS от Let's Encrypt,
+генерирует пароль на сайт и в конце печатает адрес и пароль. Пароль потом можно
+посмотреть командой `sudo grep PASSWORD /opt/predicatorr/.env`.
+
+**Обновления ставятся сами.** Раз в 5 минут сервер проверяет основную ветку на
+GitHub, и если там новый код, ставит его и перезапускает сайт
+([`deploy/update.sh`](deploy/update.sh)). Если новая версия не поднялась за
+полторы минуты, сервер возвращает прежнюю и больше этот коммит не пробует.
+Журнал: `journalctl -u predicatorr-update`. Выключить:
+`sudo systemctl disable --now predicatorr-update.timer`.
+
+Обновить вручную или поправить установку — тот же скрипт ещё раз:
+`sudo bash /opt/predicatorr/deploy/install.sh`. База, пароль и домен сохранятся.
+
+Журнал сайта — `journalctl -u predicatorr -f`. Если сертификат не выпустился,
+проверьте, что домен указывает на сервер, а порты 80 и 443 открыты, и запустите
+скрипт ещё раз.
 
 ## Настройки (`.env` или переменные окружения)
 
