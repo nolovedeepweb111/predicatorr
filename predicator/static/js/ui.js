@@ -54,6 +54,18 @@ export const fmt = {
     const d = new Date(ts * 1000);
     return d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
   },
+  // «Сегодня, чт, 2 октября» / «Завтра, …» — для расписания по дням
+  day(ts) {
+    if (!ts) return "Время не назначено";
+    const d = new Date(ts * 1000);
+    const start = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const diff = Math.round((start(d) - start(new Date())) / 86400000);
+    const label = d.toLocaleDateString("ru-RU", { weekday: "short", day: "numeric", month: "long" });
+    return diff === 0 ? `Сегодня, ${label}` : diff === 1 ? `Завтра, ${label}` : diff === -1 ? `Вчера, ${label}` : label;
+  },
+  hm(ts) {
+    return ts ? new Date(ts * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "—";
+  },
   ago(ts) {
     if (!ts) return "давно";
     const s = Math.max(0, Date.now() / 1000 - ts);

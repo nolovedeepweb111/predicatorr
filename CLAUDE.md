@@ -16,14 +16,14 @@ JS-модулях без сборки. Интерфейс и тексты — н
 | `predicator/live.py` | живые игры из pari-mixer: привязка к командам кубка, герои по игрокам (предварительные — по опыту) |
 | `predicator/external.py` | STRATZ (мета, матчапы, синергии) и OpenDota (опыт игроков в рейтинге): загрузка и признаки драфта на момент матча |
 | `predicator/backtest.py` | проверка без одного кубка, отчёт |
-| `predicator/service.py` | прогноз для живых составов (`PredictorService`), кэш контекста кубка |
+| `predicator/service.py` | прогноз для живых составов (`PredictorService`), кэш контекста кубка, честный пересчёт сыгранных игр (`played_games`) |
 | `predicator/rosters.py` | составы турнира, ручные замены, поиск игроков |
 | `predicator/mixercup.py` | GraphQL mixer-cup: активный турнир, команды, игры |
 | `predicator/pari.py` | линия PARI: снимок + изменения, сопоставление названий команд |
 | `predicator/bets.py` | маржа, ожидание, Келли, журнал, автозакрытие ставок |
 | `predicator/sync.py` | фоновый поток: быстрый проход раз в 2 мин (бэкап по ETag → mixer-cup → ставки), полный раз в 15 мин (+ внешние данные) |
 | `predicator/web.py` | API и раздача фронтенда |
-| `predicator/static/` | `index.html`, `app.css`, `js/*.js` (страницы predict, rosters, bets, model) |
+| `predicator/static/` | `index.html`, `app.css`, `js/*.js` (страницы predict, schedule, results, rosters, bets, model) |
 | `tests/` | pytest на синтетическом бэкапе (`tests/synthetic.py`), сеть не нужна |
 | `deploy/install.sh` | установка/обновление на сервере: systemd, nginx + Let's Encrypt, пароль |
 | `deploy/update.sh` | автообновление по таймеру: новый коммит → установка → проверка → откат |

@@ -115,6 +115,9 @@ CREATE TABLE IF NOT EXISTS live_games (
     team2_key     TEXT,
     week_number   INTEGER,
     seq           INTEGER,           -- порядок в расписании: 0 — самая ранняя игра
+    planned_time  INTEGER,           -- unix: по расписанию, фактическое начало и конец
+    start_time    INTEGER,
+    end_time      INTEGER,
     synced_at     INTEGER NOT NULL
 );
 
@@ -161,6 +164,8 @@ CREATE TABLE IF NOT EXISTS odds_snapshots (
     start_time INTEGER,
     k1         REAL,
     k2         REAL,
+    team1_key  TEXT,                 -- команды кубка, если событие сопоставилось
+    team2_key  TEXT,
     PRIMARY KEY (event_id, fetched_at)
 );
 
@@ -232,6 +237,11 @@ def connect(path: Path | str) -> sqlite3.Connection:
 
 # Колонки, добавленные после первых установок: CREATE TABLE IF NOT EXISTS их не добавит.
 _ADDED_COLUMNS = (("live_games", "seq", "INTEGER"),
+                  ("live_games", "planned_time", "INTEGER"),
+                  ("live_games", "start_time", "INTEGER"),
+                  ("live_games", "end_time", "INTEGER"),
+                  ("odds_snapshots", "team1_key", "TEXT"),
+                  ("odds_snapshots", "team2_key", "TEXT"),
                   ("ext_matchup_week", "fetched_at", "INTEGER NOT NULL DEFAULT 0"))
 
 

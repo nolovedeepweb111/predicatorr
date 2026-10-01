@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
+from datetime import datetime
 from typing import Any
 
 from .config import MIXER_APIS, MixerApi
@@ -25,6 +26,16 @@ PAGE = 50
 
 class GraphQLError(RuntimeError):
     pass
+
+
+def unix_time(value: str | None) -> int | None:
+    """'2026-10-01T09:00:00+00:00' -> unix-время; пусто или мусор -> None."""
+    if not value:
+        return None
+    try:
+        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
 
 
 def account_from_avatar(url: str | None) -> int | None:
@@ -79,7 +90,7 @@ def fetch_teams(api: MixerApi, tournament: int) -> list[dict]:
 
 def fetch_games(api: MixerApi, tournament: int) -> list[dict]:
     week_field = " weekNumber" if api.has_weeks else ""
-    fields = ("items { id status matchId result" + week_field
+    fields = ("items { id status matchId result plannedTime startTime endTime" + week_field
               + " team1 { id number name } team2 { id number name } }")
     items: list[dict] = []
     for status_filter in ("", ", status: COMPLETE"):
@@ -165,15 +176,19 @@ def sync_api(conn: sqlite3.Connection, api: MixerApi) -> dict[str, Any]:
         for i, g in enumerate(games):
             conn.execute(
                 "INSERT INTO live_games(game_id, tournament_id, status, match_id, result,"
-                " team1_key, team2_key, week_number, seq, synced_at) VALUES (?,?,?,?,?,?,?,?,?,?)"
+                " team1_key, team2_key, week_number, seq, planned_time, start_time, end_time,"
+                " synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(game_id) DO UPDATE SET status=excluded.status,"
                 " match_id=excluded.match_id, result=excluded.result,"
                 " team1_key=excluded.team1_key, team2_key=excluded.team2_key,"
-                " week_number=excluded.week_number, seq=excluded.seq, synced_at=excluded.synced_at",
+                " week_number=excluded.week_number, seq=excluded.seq,"
+                " planned_time=excluded.planned_time, start_time=excluded.start_time,"
+                " end_time=excluded.end_time, synced_at=excluded.synced_at",
                 (str(g["id"]), global_id, g.get("status"),
                  int(g["matchId"]) if g.get("matchId") else None, g.get("result"),
                  (g.get("team1") or {}).get("id"), (g.get("team2") or {}).get("id"),
-                 g.get("weekNumber"), len(games) - 1 - i, now))
+                 g.get("weekNumber"), len(games) - 1 - i, unix_time(g.get("plannedTime")),
+                 unix_time(g.get("startTime")), unix_time(g.get("endTime")), now))
         if t.get("name"):
             set_meta(conn, f"tournament_name_{global_id}", str(t["name"]))
         set_meta(conn, f"mixer_sync_{api.code}", str(now))

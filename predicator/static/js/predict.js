@@ -90,15 +90,15 @@ export async function render(view, { params, isCurrent }) {
   if (sel.autoLive === undefined) sel.autoLive = true;
   const save = () => store(storeKey, sel);
 
-  const quickBox = h("div", { class: "quick hidden" });
   const resultBox = h("section", { class: "card result" });
   const panelA = h("section", { class: "card team-panel a" });
   const panelB = h("section", { class: "card team-panel b" });
   const oddsBox = h("section", { class: "card" });
   view.append(
     h("div", { class: "page-title" }, h("h1", null, "Прогноз игры"),
-      h("span", { class: "muted" }, data.games_played ? `в кубке сыграно: ${nGames(data.games_played)}` : "кубок ещё не начался")),
-    h("div", { class: "stack" }, quickBox, resultBox, h("div", { class: "predict-grid" }, panelA, panelB), oddsBox));
+      h("span", { class: "muted" }, data.games_played ? `в кубке сыграно: ${nGames(data.games_played)}` : "кубок ещё не начался"),
+      h("a", { href: "#/schedule", class: "muted", style: { marginLeft: "auto", fontSize: "13px" } }, "Расписание →")),
+    h("div", { class: "stack" }, resultBox, h("div", { class: "predict-grid" }, panelA, panelB), oddsBox));
 
   const lineup = (team) => team.players.slice(0, 5).map((p) => p.account_id);
   // Герои выбираются на игру: драфт хранится по паре команд (порядок A/B не важен).
@@ -147,38 +147,6 @@ export async function render(view, { params, isCurrent }) {
     paintAll();
   }, 120);
 
-  // Быстрый выбор пары: матчи из линии PARI, иначе ближайшие игры из mixer-cup.
-  let schedule = [];
-  function paintQuick() {
-    const pairs = [];
-    const events = (oddsCache.data && oddsCache.data.events) || [];
-    for (const ev of events) {
-      if (ev.linked) pairs.push({ a: ev.team1_key, b: ev.team2_key, label: `${fmt.time(ev.start_time)}${ev.place === "live" ? " LIVE" : ""}` });
-    }
-    for (const g of schedule) {
-      if (teamByKey(g.team1_key) && teamByKey(g.team2_key) && !pairs.some((p) => p.a === g.team1_key && p.b === g.team2_key)) {
-        pairs.push({ a: g.team1_key, b: g.team2_key, label: g.week_number ? `неделя ${g.week_number}` : "по расписанию" });
-      }
-    }
-    quickBox.classList.toggle("hidden", !pairs.length);
-    quickBox.replaceChildren(h("span", { class: "muted" }, "Ближайшие игры:"), ...pairs.slice(0, 10).map((p) =>
-      h("button", { type: "button", class: `chip${p.a === sel.a && p.b === sel.b ? " active" : ""}`, onclick: () => {
-        sel.a = p.a;
-        sel.b = p.b;
-        liveGame = null;
-        liveSig = "";
-        provisional.clear();
-        pollLive();
-        sel.manualOdds = false;
-        sel.k_a = sel.k_b = null;
-        save();
-        result = null;
-        paintAll();
-        runPredict();
-        loadOdds();
-      } }, h("span", { class: "faint" }, p.label, " "), `${teamByKey(p.a).name} — ${teamByKey(p.b).name}`)));
-  }
-
   // Живая игра: раз в 15 секунд берём драфт и время игры и подставляем героев.
   const pairGame = (games) => (games || []).find((g) =>
     [g.team_keys.radiant, g.team_keys.dire].sort().join("|") === pairKey()) || null;
@@ -214,14 +182,9 @@ export async function render(view, { params, isCurrent }) {
   const liveTimer = setInterval(pollLive, 15000);
   pollLive();
 
-  api(`/api/schedule${qs({ tournament_id: state.tournamentId })}`)
-    .then((d) => { schedule = d.games || []; if (isCurrent()) paintQuick(); })
-    .catch(() => {});
-
   async function loadOdds(force = false) {
     const odds = await pariOdds(force);
     if (!isCurrent()) return;
-    paintQuick();
     event = findEvent(odds, sel.a, sel.b);
     if (event && !sel.manualOdds) {
       const { ev, swapped } = event;

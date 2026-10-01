@@ -27,7 +27,7 @@ from .external import coverage as external_coverage
 from .external import stratz_token
 from .heroes import heroes
 from .http import FetchError
-from .pari import PariLine, link_events
+from .pari import PariLine, best_team, link_events
 from .rosters import (add_change, default_tournament, delete_change, ensure_local_player,
                       search_players, tournaments)
 from .service import PredictorService
@@ -314,23 +314,18 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
 
     # --- линия PARI ------------------------------------------------------
 
-    @app.get("/api/odds")
-    def odds(tournament_id: int | None = None, refresh: bool = False,
-             conn: sqlite3.Connection = Depends(get_conn)) -> dict:
-        if not settings.pari_enabled:
-            return {"enabled": False, "events": []}
+    def line_events(conn: sqlite3.Connection, tid: int, force: bool = False) -> tuple[list[dict], str | None]:
+        """Dota-события линии PARI, сопоставленные с командами кубка; изменения коэффициентов
+        записываются (по ним потом видно открытие и цену перед началом каждой игры)."""
         error = None
         try:
-            pari.refresh(force=refresh)
+            pari.refresh(force=force)
         except FetchError as exc:
             error = str(exc)
-        require_model(conn)
-        tid = resolve_tournament(conn, tournament_id)
         ctx = service.cup_context(conn, tid)
         names = {k: t.name for k, t in ctx.teams.items() if len(t.lineup) >= 5}
         numbers = {k: ctx.teams[k].number for k in names}
         events = link_events(pari.dota_events(), names, numbers)
-        bet_settings = bets_mod.get_bet_settings(conn)
         now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
         for ev in events:
             if ev["k1"] and ev["k2"]:
@@ -338,9 +333,10 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
                                     " ORDER BY fetched_at DESC LIMIT 1", (ev["event_id"],)).fetchone()
                 if not last or (last["k1"], last["k2"]) != (ev["k1"], ev["k2"]):
                     conn.execute("INSERT OR IGNORE INTO odds_snapshots(event_id, fetched_at, team1,"
-                                 " team2, start_time, k1, k2) VALUES (?,?,?,?,?,?,?)",
+                                 " team2, start_time, k1, k2, team1_key, team2_key)"
+                                 " VALUES (?,?,?,?,?,?,?,?,?)",
                                  (ev["event_id"], now, ev["team1"], ev["team2"], ev["start_time"],
-                                  ev["k1"], ev["k2"]))
+                                  ev["k1"], ev["k2"], ev.get("team1_key"), ev.get("team2_key")))
             # В лайве PARI то и дело приостанавливает приём и на это время коэффициентов не
             # отдаёт: покажем первые и последние, что видели (без расчёта по ним).
             first = conn.execute("SELECT k1, k2 FROM odds_snapshots WHERE event_id = ?"
@@ -351,6 +347,38 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
             ev["last"] = None if not latest else {
                 "k1": latest["k1"], "k2": latest["k2"],
                 "at": calendar.timegm(time.strptime(latest["fetched_at"], "%Y-%m-%dT%H:%M:%S"))}
+        return events, error
+
+    def record_line() -> None:
+        """Фоновая запись линии: открытие и цена перед началом есть у каждой игры, даже если
+        сайт в это время никто не открывал."""
+        if not settings.pari_enabled:
+            return
+        conn = connect(settings.db_path)
+        try:
+            service.refresh(conn)
+            if service.ready:
+                tid = default_tournament(conn)
+                if tid is not None:
+                    line_events(conn, tid)
+        except Exception:  # noqa: BLE001 — запись линии не должна ронять фоновое обновление
+            logging.getLogger("predicator.web").exception("PARI line recording failed")
+        finally:
+            conn.close()
+
+    sync.on_change = lambda report: record_line()
+
+    @app.get("/api/odds")
+    def odds(tournament_id: int | None = None, refresh: bool = False,
+             conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+        if not settings.pari_enabled:
+            return {"enabled": False, "events": []}
+        require_model(conn)
+        tid = resolve_tournament(conn, tournament_id)
+        events, error = line_events(conn, tid, force=refresh)
+        ctx = service.cup_context(conn, tid)
+        bet_settings = bets_mod.get_bet_settings(conn)
+        for ev in events:
             if not ev["linked"]:
                 continue
             try:
@@ -371,6 +399,101 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
                     bet_settings, in_play=ev["place"] == "live")
         return {"enabled": True, "error": error, "status": pari.status(), "tournament_id": tid,
                 "events": events}
+
+    # --- расписание и результаты ------------------------------------------
+
+    def upcoming_games(conn: sqlite3.Connection, tid: int, limit: int) -> list[dict]:
+        ctx = service.cup_context(conn, tid)
+        rows = conn.execute(
+            "SELECT * FROM live_games WHERE tournament_id = ? AND (status IS NULL OR status != 'COMPLETE')"
+            " ORDER BY status != 'ACTIVE', COALESCE(planned_time, 9e18), seq, game_id LIMIT ?",
+            (tid, limit)).fetchall()
+        events: dict[frozenset, dict] = {}
+        if settings.pari_enabled:
+            for ev in line_events(conn, tid)[0]:
+                if ev["linked"]:
+                    events[frozenset((ev["team1_key"], ev["team2_key"]))] = ev
+        lives = {frozenset(g["team_keys"].values()): g for g in service.live_games(conn, tid, live)} \
+            if live.enabled else {}
+        bet_settings = bets_mod.get_bet_settings(conn)
+        out = []
+        for r in rows:
+            a, b = r["team1_key"], r["team2_key"]
+            if a not in ctx.teams or b not in ctx.teams:
+                continue
+            item = {"game_id": r["game_id"], "status": r["status"], "planned_time": r["planned_time"],
+                    "start_time": r["start_time"], "week": r["week_number"],
+                    "team_a": {"key": a, "name": ctx.teams[a].name},
+                    "team_b": {"key": b, "name": ctx.teams[b].name}, "p_a": None}
+            try:
+                pred = service.predict(conn, tid, a, b)
+                item["p_a"], item["fair_odds"] = pred["p_a"], pred["fair_odds"]
+            except ValueError:
+                pass
+            ev = events.get(frozenset((a, b)))
+            if ev:
+                k = (ev["k1"], ev["k2"]) if ev["team1_key"] == a else (ev["k2"], ev["k1"])
+                item["odds"] = {"k_a": k[0], "k_b": k[1], "place": ev["place"], "blocked": ev["blocked"]}
+                if k[0] and k[1] and not ev["blocked"] and item["p_a"] is not None:
+                    item["offer"] = bets_mod.Offer(k[0], k[1], item["p_a"]).analyse(
+                        bet_settings, in_play=ev["place"] == "live")
+            g = lives.get(frozenset((a, b)))
+            if g:
+                item["live"] = {k: g[k] for k in ("game_time", "picks", "assigned", "draft_complete",
+                                                   "before_horn", "score")}
+            out.append(item)
+        return out
+
+    def played_games(conn: sqlite3.Connection, tid: int) -> dict:
+        games = [dict(g) for g in service.played_games(conn, tid)]
+        # цена PARI перед началом — по записанной линии, если игра в ней была
+        ctx = service.cup_context(conn, tid)
+        names = {k: t.name for k, t in ctx.teams.items()}
+        by_pair: dict[frozenset, list[dict]] = {}
+        for row in conn.execute("SELECT event_id, fetched_at, k1, k2, team1, team2, team1_key, team2_key,"
+                                " start_time FROM odds_snapshots ORDER BY fetched_at"):
+            s = dict(row)
+            if not s["team1_key"] or not s["team2_key"]:      # записано до привязки к командам
+                s["team1_key"] = best_team(s["team1"] or "", names)[0]
+                s["team2_key"] = best_team(s["team2"] or "", names)[0]
+                if not s["team1_key"] or not s["team2_key"] or s["team1_key"] == s["team2_key"]:
+                    continue
+            by_pair.setdefault(frozenset((s["team1_key"], s["team2_key"])), []).append(s)
+        pre_hits = draft_hits = pari_n = pari_hits = 0
+        for g in games:
+            a = g["team_a"]["key"]
+            snaps = [s for s in by_pair.get(frozenset((a, g["team_b"]["key"])), [])
+                     if s["start_time"] and abs(s["start_time"] - g["start_time"]) < 4 * 3600]
+            if snaps:
+                eid = min(snaps, key=lambda s: abs(s["start_time"] - g["start_time"]))["event_id"]
+                snaps = [s for s in snaps if s["event_id"] == eid]
+                before = [s for s in snaps if calendar.timegm(
+                    time.strptime(s["fetched_at"], "%Y-%m-%dT%H:%M:%S")) <= g["start_time"]]
+
+                def side(s: dict) -> list[float]:
+                    return [s["k1"], s["k2"]] if s["team1_key"] == a else [s["k2"], s["k1"]]
+                g["pari"] = {"opening": side(snaps[0]), "close": side(before[-1]) if before else None}
+                if before:
+                    k_a, k_b = side(before[-1])
+                    pari_n += 1
+                    pari_hits += int((k_a < k_b) == (g["winner"] == "a"))
+            pre_hits += int((g["pre"] >= 0.5) == (g["winner"] == "a"))
+            draft_hits += int((g["draft"] >= 0.5) == (g["winner"] == "a"))
+        return {"games": games, "summary": {"games": len(games), "pre_hits": pre_hits,
+                                            "draft_hits": draft_hits, "pari_games": pari_n,
+                                            "pari_hits": pari_hits}}
+
+    @app.get("/api/games")
+    def games(tournament_id: int | None = None, kind: str = "upcoming", limit: int = 40,
+              conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+        """Будущие игры кубка (upcoming) или сыгранные с нашим прогнозом и итогом (played)."""
+        if kind not in ("upcoming", "played"):
+            raise HTTPException(400, "kind: upcoming или played")
+        require_model(conn)
+        tid = resolve_tournament(conn, tournament_id)
+        if kind == "played":
+            return {"tournament_id": tid, **played_games(conn, tid)}
+        return {"tournament_id": tid, "games": upcoming_games(conn, tid, max(1, min(limit, 300)))}
 
     # --- ставки ------------------------------------------------------------
 

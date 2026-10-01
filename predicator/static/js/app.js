@@ -6,8 +6,10 @@ import * as predict from "./predict.js";
 import * as rosters from "./rosters.js";
 import * as bets from "./bets.js";
 import * as model from "./model.js";
+import * as schedule from "./schedule.js";
+import * as results from "./results.js";
 
-const routes = { predict, rosters, bets, model };
+const routes = { predict, schedule, results, rosters, bets, model };
 
 export const state = {
   tournamentId: null,

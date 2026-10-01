@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sqlite3
 import threading
 import time
@@ -17,7 +18,7 @@ from .features import (ROSTER_FEATURES, History, Imputation, default_imputation,
 from .heroes import hero_by_id
 from .live import LiveFeed, comfort_fn, describe, link_game
 from .model import (CupRater, Norm, TrainedModel, comfort, draft_delta, hero_strength,
-                    roster_score, train)
+                    match_picks, roster_score, train)
 from .rosters import Team, load_teams
 
 CONFIDENCE_CAP = 0.93    # крайние прогнозы по проверке чуть самоувереннее факта
@@ -45,6 +46,7 @@ class PredictorService:
         self._model_error: str | None = None
         self._cup_cache: dict[tuple, CupContext] = {}
         self._hist_pre_cache: dict[tuple, History] = {}
+        self._played_cache: dict[tuple, list[dict]] = {}
 
     def connect(self) -> sqlite3.Connection:
         return connect(self.settings.db_path)
@@ -279,6 +281,79 @@ class PredictorService:
                 out.append(describe(g, sides, comfort))
         return out
 
+    def played_games(self, conn: sqlite3.Connection, tournament_id: int) -> list[dict]:
+        """Сыгранные игры кубка: прогноз до драфта и с драфтом и что вышло.
+
+        Только то, что было известно до игры: признаки состава — по истории до кубка,
+        форма — по прошлым играм кубка, драфт — по истории до этой игры, составы и
+        герои — те, что реально вышли. Модель обучена на завершённых кубках, а идущий в
+        неё не входит, так что это честный прогноз, а не подгонка.
+        """
+        ctx = self.cup_context(conn, tournament_id)
+        ds, model = self.dataset, self.model
+        cup = ds.cups.get(tournament_id)
+        if cup is None:
+            return []
+        key = (self._version, tournament_id, len(cup.matches))
+        with self._lock:
+            if key in self._played_cache:
+                return self._played_cache[key]
+        params = model.params
+        wanted = {m.match_id for m in cup.matches}
+        drafts: dict[int, dict] = {}
+        hist = History()
+        center_sum = center_n = 0.0
+        for m in ds.matches:                     # драфт — по истории строго до игры
+            if m.match_id in wanted:
+                center = center_sum / center_n if center_n else 0.0
+                drafts[m.match_id] = draft_delta(hist, match_picks(m, True), match_picks(m, False),
+                                                 params, center, model.ext, m.start_time)
+            if len(m.radiant) == 5 and len(m.dire) == 5:
+                for p in m.radiant + m.dire:
+                    st = hist.players.get(p.account_id)
+                    center_sum += math.log1p(st.hero_games.get(p.hero_id, 0) if st else 0)
+                    center_n += 1
+            hist.add(m)
+        rows = {r["match_id"]: r for r in conn.execute(
+            "SELECT match_id, team1_key, team2_key, planned_time, start_time FROM live_games"
+            " WHERE tournament_id = ? AND match_id IS NOT NULL", (tournament_id,))}
+
+        def cap(p: float) -> float:
+            return min(max(p, 1 - CONFIDENCE_CAP), CONFIDENCE_CAP)
+
+        rater = CupRater(params)
+        out = []
+        for m in cup.matches:
+            rating = {}
+            for radiant in (True, False):
+                lineup = sorted(m.lineup(radiant))
+                feats = roster_features(ctx.hist_pre, lineup, ctx.mmr, ctx.imp, params.gold_shrink)
+                rating[radiant] = (params.scale * roster_score(model.weights, ctx.norm, feats)
+                                   + rater.form(lineup)[0])
+            z = rating[True] - rating[False]
+            rater.add(m.lineup(True), m.lineup(False), bool(m.radiant_win), sigmoid(z))
+            row = rows.get(m.match_id)
+            sides = _game_sides(m, row, ctx.teams)
+            a_radiant = sides["a_radiant"]
+            p_pre = sigmoid(z)
+            p_draft = sigmoid(model.combine(z, drafts[m.match_id]))
+            if not a_radiant:
+                p_pre, p_draft = 1 - p_pre, 1 - p_draft
+            heroes = {r: [p.hero_id for p in m.side(r) if p.hero_id] for r in (True, False)}
+            out.append({
+                "match_id": m.match_id,
+                "start_time": (row["start_time"] if row and row["start_time"] else m.start_time),
+                "duration": m.duration,
+                "team_a": sides["a"], "team_b": sides["b"],
+                "winner": "a" if bool(m.radiant_win) == a_radiant else "b",
+                "pre": round(cap(p_pre), 4), "draft": round(cap(p_draft), 4),
+                "heroes_a": heroes[a_radiant], "heroes_b": heroes[not a_radiant],
+            })
+        out.reverse()                            # свежие сверху
+        with self._lock:
+            self._played_cache = {key: out}
+        return out
+
     def _matchup_notes(self, model: TrainedModel, a: list, b: list) -> list[dict]:
         """Самые заметные матчапы драфта (перевес героя A над героем B по высокому рейтингу)."""
         ext = model.ext
@@ -305,6 +380,27 @@ class PredictorService:
                         "meta_wr": meta,
                         "farm_rank": round(hs.rank_sum / hs.stat_games, 2) if hs and hs.stat_games else None})
         return out
+
+
+def _game_sides(m, row, teams: dict) -> dict:
+    """Команды игры: из расписания mixer-cup (team1 — «A»), стороны — по составам."""
+    radiant, dire = m.lineup(True), m.lineup(False)
+
+    def overlap(key: str | None, side: frozenset[int]) -> int:
+        return len(side & set(teams[key].lineup)) if key in teams else 0
+
+    def info(key: str | None, fallback: str) -> dict:
+        return {"key": key, "name": teams[key].name if key in teams else fallback}
+
+    if row and row["team1_key"] in teams and row["team2_key"] in teams:
+        t1, t2 = row["team1_key"], row["team2_key"]
+        a_radiant = overlap(t1, radiant) + overlap(t2, dire) >= overlap(t1, dire) + overlap(t2, radiant)
+        return {"a": info(t1, ""), "b": info(t2, ""), "a_radiant": a_radiant}
+    best = {}
+    for name, side in (("radiant", radiant), ("dire", dire)):
+        score, key = max(((overlap(k, side), k) for k in teams), default=(0, None))
+        best[name] = key if score >= 3 else None
+    return {"a": info(best["radiant"], "Свет"), "b": info(best["dire"], "Тьма"), "a_radiant": True}
 
 
 def series_probs(p: float) -> dict:
