@@ -22,6 +22,7 @@ ELO_K = 24.0
 class PlayerStat:
     games: int = 0
     wins: int = 0
+    stat_games: int = 0            # игры, где известно золото (знаменатель для gold и rank)
     gold_sum: float = 0.0
     rank_sum: float = 0.0
     elo: float = ELO_START
@@ -36,6 +37,7 @@ class PlayerStat:
 class HeroStat:
     games: int = 0
     wins: int = 0
+    stat_games: int = 0
     rank_sum: float = 0.0
     gold_sum: float = 0.0
 
@@ -78,17 +80,20 @@ class History:
             for p in side:
                 st = self.players[p.account_id]
                 st.games += 1
-                st.gold_sum += p.gold_share
-                st.rank_sum += p.farm_rank
                 st.hero_games[p.hero_id] += 1
-                st.hero_gold[p.hero_id] += p.gold_share
                 if m.tournament_id is not None and team is not None:
                     key = (m.tournament_id, team)
                     st.stints[key] = st.stints.get(key, 0) + 1
                 hs = self.heroes[p.hero_id]
                 hs.games += 1
-                hs.rank_sum += p.farm_rank
-                hs.gold_sum += p.gold_share
+                if m.has_stats:
+                    st.stat_games += 1
+                    st.gold_sum += p.gold_share
+                    st.rank_sum += p.farm_rank
+                    st.hero_gold[p.hero_id] += p.gold_share
+                    hs.stat_games += 1
+                    hs.rank_sum += p.farm_rank
+                    hs.gold_sum += p.gold_share
                 if won:
                     st.wins += 1
                     st.hero_wins[p.hero_id] += 1
@@ -133,15 +138,15 @@ class History:
 
     def gold(self, account_id: int, shrink: float = 0.0, prior: float = 1.0) -> float | None:
         st = self.players.get(account_id)
-        if not st or not st.games:
+        if not st or not st.stat_games:
             return None
-        return (st.gold_sum + shrink * prior) / (st.games + shrink)
+        return (st.gold_sum + shrink * prior) / (st.stat_games + shrink)
 
     def farm_rank(self, account_id: int) -> float | None:
         st = self.players.get(account_id)
-        if not st or not st.games:
+        if not st or not st.stat_games:
             return None
-        return st.rank_sum / st.games
+        return st.rank_sum / st.stat_games
 
     def elo(self, account_id: int) -> float:
         st = self.players.get(account_id)
@@ -184,7 +189,7 @@ def roster_features(hist: History, lineup: Sequence[int], mmr: dict[int, float |
 
 def default_imputation(hist: History, mmr: dict[int, float | None]) -> Imputation:
     """Новичка считаем игроком чуть ниже среднего: медианы по истории."""
-    golds = sorted(st.gold_sum / st.games for st in hist.players.values() if st.games >= 5)
+    golds = sorted(st.gold_sum / st.stat_games for st in hist.players.values() if st.stat_games >= 5)
     durs = sorted(d for d in (hist.durability(a) for a in hist.players) if d is not None)
     mmrs = sorted(v for v in mmr.values() if v)
 

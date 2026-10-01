@@ -51,8 +51,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "import":
         from .importer import refresh_backup
-        print(json.dumps(refresh_backup(conn, args.source or settings.backup_url, force=True),
-                         ensure_ascii=False))
+        if args.source:
+            res = refresh_backup(conn, args.source, force=True)
+        else:
+            res = refresh_backup(conn, settings.backup_url, force=True, token=settings.backup_token,
+                                 fallback=settings.backup_fallback_url)
+        print(json.dumps(res, ensure_ascii=False))
         return 0
 
     if args.cmd == "sync":

@@ -154,10 +154,11 @@ class PredictorService:
                     "durability": None, "farm_rank": None}
         return {
             "games": st.games, "winrate": round(st.wins / st.games, 3),
-            "gold": round(st.gold_sum / st.games, 3), "elo": round(st.elo),
+            "gold": round(st.gold_sum / st.stat_games, 3) if st.stat_games else None,
+            "elo": round(st.elo),
             "durability": None if hist.durability(account_id) is None
             else round(hist.durability(account_id), 3),
-            "farm_rank": round(st.rank_sum / st.games, 2),
+            "farm_rank": round(st.rank_sum / st.stat_games, 2) if st.stat_games else None,
         }
 
     def top_heroes(self, account_id: int, n: int = 8) -> list[dict]:
@@ -284,7 +285,7 @@ class PredictorService:
                         "wins": hs.wins if hs else 0,
                         "strength": round(hero_strength(model.hist, h["id"], model.params), 4),
                         "meta_wr": meta,
-                        "farm_rank": round(hs.rank_sum / hs.games, 2) if hs and hs.games else None})
+                        "farm_rank": round(hs.rank_sum / hs.stat_games, 2) if hs and hs.stat_games else None})
         return out
 
 

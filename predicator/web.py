@@ -30,6 +30,7 @@ from .pari import PariLine, link_events
 from .rosters import (add_change, default_tournament, delete_change, ensure_local_player,
                       search_players, tournaments)
 from .service import PredictorService
+from .importer import backup_status
 from .sync import SyncThread, last_sync, sync_once
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -164,6 +165,7 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
             "model": service.status(),
             "sync": last_sync(conn),
             "sync_running": sync.running,
+            "backup": backup_status(conn),
             "pari": {**pari.status(), "enabled": settings.pari_enabled},
             "external": {**external_coverage(conn), "enabled": settings.external_enabled,
                          "stratz_token_set": bool(stratz_token(conn, settings))},

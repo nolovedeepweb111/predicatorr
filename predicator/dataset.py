@@ -36,6 +36,9 @@ class Match:
     dire: tuple[PlayerGame, ...]
     radiant_bans: tuple[int, ...] = ()
     dire_bans: tuple[int, ...] = ()
+    # Золото и убийства OpenDota дозаполняет позже: пока их нет, матч идёт в результаты,
+    # форму и Эло, но не в долю золота и место по фарму.
+    has_stats: bool = True
 
     def side(self, radiant: bool) -> tuple[PlayerGame, ...]:
         return self.radiant if radiant else self.dire
@@ -114,7 +117,8 @@ def load_dataset(conn: sqlite3.Connection) -> Dataset:
 
     matches: list[Match] = []
     for r in conn.execute("SELECT * FROM matches ORDER BY start_time, match_id"):
-        radiant, dire = _player_games(by_match.get(r["match_id"], []))
+        rows = by_match.get(r["match_id"], [])
+        radiant, dire = _player_games(rows)
         b = bans.get(r["match_id"], {})
         matches.append(Match(
             match_id=r["match_id"], league_id=r["league_id"], start_time=r["start_time"],
@@ -124,6 +128,7 @@ def load_dataset(conn: sqlite3.Connection) -> Dataset:
             radiant=radiant, dire=dire,
             radiant_bans=tuple(b.get(r["radiant_team_id"], ())),
             dire_bans=tuple(b.get(r["dire_team_id"], ())),
+            has_stats=any(x["gold_per_min"] for x in rows),
         ))
 
     players = {

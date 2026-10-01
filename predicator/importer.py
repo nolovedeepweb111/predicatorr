@@ -3,6 +3,10 @@
 Бэкап — полный снимок, поэтому история (матчи, игроки, драфты) просто
 перезаписывается построчно. Наши собственные таблицы (замены, ставки) не трогаем,
 как и игроков с отрицательным account_id: их заводим мы сами.
+
+Источник — локальная выгрузка pari-mixer на том же сервере (по токену, свежая) или
+ветка data-backup на GitHub (обновляется раз в несколько часов). Оба спрашиваем с
+If-None-Match: неизменившийся бэкап не скачивается.
 """
 
 from __future__ import annotations
@@ -13,9 +17,10 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .db import get_meta, set_meta, transaction
-from .http import get_bytes
+from .http import FetchError, get_bytes, get_conditional
 
 
 def load_backup_raw(source: str | Path) -> bytes:
@@ -29,16 +34,66 @@ def load_backup(source: str | Path) -> dict[str, Any]:
     return json.loads(load_backup_raw(source))
 
 
-def refresh_backup(conn: sqlite3.Connection, source: str | Path, force: bool = False) -> dict:
-    """Скачать бэкап и импортировать, если он изменился с прошлого раза."""
-    raw = load_backup_raw(source)
+def refresh_backup(conn: sqlite3.Connection, source: str | Path, force: bool = False,
+                   token: str = "", fallback: str = "") -> dict:
+    """Скачать бэкап и импортировать, если он изменился; при ошибке — из запасного источника.
+
+    Токен уходит только на основной адрес, на запасной (GitHub) — никогда.
+    """
+    tries = [(str(source), token)]
+    if fallback and fallback != str(source):
+        tries.append((fallback, ""))
+    errors: list[str] = []
+    for url, tok in tries:
+        try:
+            res = _refresh_from(conn, url, tok, force)
+        except (FetchError, ValueError) as exc:
+            errors.append(str(exc)[:300])
+            continue
+        if errors:
+            res["primary_error"] = errors[0]
+        return res
+    raise FetchError("; ".join(errors))
+
+
+def _refresh_from(conn: sqlite3.Connection, source: str, token: str, force: bool) -> dict:
+    now = str(int(time.time()))
+    if source.startswith(("http://", "https://")):
+        etag_key = f"backup_etag:{source}"
+        raw, etag = get_conditional(source, headers={"X-Export-Token": token} if token else None,
+                                    etag=None if force else get_meta(conn, etag_key), timeout=120)
+    else:
+        etag_key, raw, etag = None, load_backup_raw(source), None
+    set_meta(conn, "backup_source", source)
+    set_meta(conn, "backup_checked_at", now)
+    if raw is None:                                   # 304: не изменился
+        return {"changed": False, "source": source}
     digest = hashlib.sha256(raw).hexdigest()
-    if not force and digest == get_meta(conn, "backup_sha256"):
-        return {"changed": False}
-    stats = import_backup(conn, json.loads(raw))
+    changed = force or digest != get_meta(conn, "backup_sha256")
+    stats = import_backup(conn, json.loads(raw)) if changed else {}
+    if etag_key and etag:
+        set_meta(conn, etag_key, etag)
+    if not changed:
+        return {"changed": False, "source": source}
     set_meta(conn, "backup_sha256", digest)
+    set_meta(conn, "backup_changed_at", now)
     bump_data_version(conn)
-    return {"changed": True, **stats}
+    return {"changed": True, "source": source, **stats}
+
+
+def backup_status(conn: sqlite3.Connection) -> dict:
+    """Откуда пришла история и насколько она свежая (без адреса и токена)."""
+    src = get_meta(conn, "backup_source") or ""
+    host = urlparse(src).hostname or ""
+    kind = ("local" if host in ("127.0.0.1", "localhost", "::1") else
+            "github" if host.endswith("githubusercontent.com") else "other" if src else None)
+
+    def ts(key: str) -> int | None:
+        return int(get_meta(conn, key) or 0) or None
+
+    last = conn.execute("SELECT MAX(start_time) FROM matches WHERE radiant_win IS NOT NULL").fetchone()[0]
+    return {"source": kind, "checked_at": ts("backup_checked_at"), "changed_at": ts("backup_changed_at"),
+            "last_match_at": last}
 
 
 def bump_data_version(conn: sqlite3.Connection) -> None:

@@ -134,10 +134,16 @@ function calibrationCard(bt) {
 function sourcesCard(status) {
   const sync = status.sync;
   const rows = [];
+  const bk = status.backup || {};
+  const SOURCE = { local: "локальная выгрузка pari-mixer", github: "GitHub (обновляется раз в несколько часов)", other: "свой адрес" };
   if (sync) {
     const b = sync.backup || {};
-    rows.push(["Бэкап матчей (GitHub)", b.error ? h("span", { class: "bad" }, b.error)
-      : b.changed ? `обновлён: ${b.matches} матчей` : "без изменений", fmt.ago(sync.finished_at)]);
+    const what = [SOURCE[bk.source] || "источник неизвестен",
+      bk.last_match_at ? `последняя игра в истории ${fmt.ago(bk.last_match_at)}` : null].filter(Boolean).join(" · ");
+    rows.push(["История матчей", b.error ? h("span", { class: "bad" }, b.error)
+      : b.primary_error ? h("span", null, what, h("div", { class: "bad", style: { fontSize: "12px" } },
+        `основной источник не ответил: ${b.primary_error.slice(0, 160)}`)) : what,
+    bk.checked_at ? `проверено ${fmt.ago(bk.checked_at)}` : ""]);
     for (const m of sync.mixer || []) {
       rows.push([`mixer-cup: ${m.series}`, m.error ? h("span", { class: "bad" }, m.error)
         : m.active ? `активный турнир ${m.active}${m.status ? ` (${m.status})` : ""}${m.teams !== undefined ? `, команд ${m.teams}, игр ${m.games}` : ""}` : "активного турнира нет", ""]);

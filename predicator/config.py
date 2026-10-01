@@ -29,6 +29,13 @@ def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+# Публичный бэкап pari-mixer на GitHub. GitHub обновляет его раз в несколько часов, поэтому
+# на одном сервере с pari-mixer лучше читать его локальную выгрузку (docs/pari-mixer-export.md),
+# а этот адрес оставить запасным.
+GITHUB_BACKUP_URL = ("https://raw.githubusercontent.com/nolovedeepweb111/pari-mixer-scraper/"
+                     "data-backup/backup.json")
+
+
 @dataclass(frozen=True)
 class MixerApi:
     """Одна копия платформы mixer-cup. Номера турниров сдвигаются, чтобы стать глобальными."""
@@ -64,12 +71,16 @@ def series_of(tournament_id: int | None) -> MixerApi | None:
 class Settings:
     db_path: Path = field(default_factory=lambda: Path(
         _env("PREDICATOR_DB", str(ROOT / "var" / "predicator.sqlite3"))))
-    backup_url: str = field(default_factory=lambda: _env(
-        "PREDICATOR_BACKUP_URL",
-        "https://raw.githubusercontent.com/nolovedeepweb111/pari-mixer-scraper/"
-        "data-backup/backup.json"))
-    # Как часто перекачивать бэкап и опрашивать mixer-cup (минуты); 0 — не обновлять в фоне.
+    backup_url: str = field(default_factory=lambda: _env("PREDICATOR_BACKUP_URL", GITHUB_BACKUP_URL))
+    # Токен локальной выгрузки pari-mixer (заголовок X-Export-Token); уходит только на backup_url.
+    backup_token: str = field(default_factory=lambda: _env("PREDICATOR_BACKUP_TOKEN", ""))
+    # Откуда брать бэкап, если backup_url не отвечает.
+    backup_fallback_url: str = field(default_factory=lambda: _env(
+        "PREDICATOR_BACKUP_FALLBACK_URL", GITHUB_BACKUP_URL))
+    # Полный проход (с метой, матчапами и историей игроков) — раз в N минут; 0 — только по кнопке.
     sync_minutes: int = field(default_factory=lambda: int(_env("PREDICATOR_SYNC_MINUTES", "15")))
+    # Между полными — быстрые проходы: бэкап (с ETag), mixer-cup, закрытие ставок; 0 — без них.
+    fast_sync_seconds: int = field(default_factory=lambda: int(_env("PREDICATOR_FAST_SYNC_SECONDS", "120")))
     mixer_live: bool = field(default_factory=lambda: _env("PREDICATOR_MIXER_LIVE", "1") == "1")
     pari_hosts: tuple[str, ...] = field(default_factory=lambda: tuple(
         h.strip().rstrip("/") for h in _env(

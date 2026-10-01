@@ -35,6 +35,28 @@ def get_bytes(url: str, headers: dict[str, str] | None = None, timeout: float = 
     return _read(req, timeout)
 
 
+def get_conditional(url: str, headers: dict[str, str] | None = None, etag: str | None = None,
+                    timeout: float = 30) -> tuple[bytes | None, str | None]:
+    """GET с If-None-Match: (тело, ETag) или (None, ETag), если не изменилось (304)."""
+    hdrs = {"User-Agent": USER_AGENT, "Accept-Encoding": "gzip", **(headers or {})}
+    if etag:
+        hdrs["If-None-Match"] = etag
+    req = urllib.request.Request(url, headers=hdrs)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+            if resp.headers.get("Content-Encoding") == "gzip" or data[:2] == b"\x1f\x8b":
+                data = gzip.decompress(data)
+            return data, resp.headers.get("ETag")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 304:
+            return None, etag
+        body = exc.read()[:300].decode("utf-8", "replace")
+        raise FetchError(f"{url}: HTTP {exc.code} {body}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise FetchError(f"{url}: {exc}") from exc
+
+
 def get_json(url: str, headers: dict[str, str] | None = None, timeout: float = 30) -> Any:
     req = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT, "Accept": "application/json", "Accept-Encoding": "gzip",
