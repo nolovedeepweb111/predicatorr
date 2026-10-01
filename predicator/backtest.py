@@ -12,10 +12,11 @@ import math
 from dataclasses import dataclass, field
 
 from .dataset import Dataset
+from .external import ExternalData
 from .features import credited_form, sigmoid
 from .linalg import logistic
-from .model import (Params, fit_roster_weights, finished_cups, prepare_cup, roster_score,
-                    training_rows)
+from .model import (LEAGUE_FEATURES, Params, active_features, fit_roster_weights, finished_cups,
+                    prepare_cup, roster_score, training_rows)
 
 
 @dataclass
@@ -57,20 +58,26 @@ class Score:
         }
 
 
-def run_backtest(ds: Dataset, now: int, params: Params = Params()) -> dict:
+def run_backtest(ds: Dataset, now: int, params: Params = Params(),
+                 ext: ExternalData | None = None) -> dict:
     mmr = {a: p.mmr for a, p in ds.players.items()}
     cups = {c.tournament_id: prepare_cup(ds, c, params, mmr) for c in finished_cups(ds, now)}
     loco = {t: fit_roster_weights([c for u, c in cups.items() if u != t], params) for t in cups}
-    rows = training_rows(ds, cups, params, loco)
+    rows = training_rows(ds, cups, params, loco, ext)
+    full = active_features(params, ext)
+    variants = {"draft_league": [f for f in full if f in LEAGUE_FEATURES], "draft": list(full)}
 
     total = {"coin": Score(), "doc": Score(), "roster": Score(), "pre_draft": Score(),
-             "draft": Score()}
+             "draft_league": Score(), "draft": Score()}
+    if variants["draft_league"] == variants["draft"]:
+        del total["draft_league"], variants["draft_league"]
     per_cup: dict[int, dict[str, Score]] = {}
     for held, c in cups.items():
         cup_scores = per_cup.setdefault(held, {k: Score() for k in total})
         train = [r for r in rows.values() if r[0] != held]
-        coef = logistic([[z, *d] for (_, z, d, _) in train], [r[3] for r in train],
-                        l2=params.draft_l2)
+        coefs = {k: logistic([[z, *(d[f] for f in feats)] for (_, z, d, _) in train],
+                             [r[3] for r in train], l2=params.draft_l2)
+                 for k, feats in variants.items()}
         for i, m in enumerate(c.cup.matches):
             _, z, d, y = rows[m.match_id]
             fs = c.match_feats[i]
@@ -86,7 +93,8 @@ def run_backtest(ds: Dataset, now: int, params: Params = Params()) -> dict:
                 "doc": sigmoid(6 * (blend[True] - blend[False])),
                 "roster": sigmoid(params.scale * (s_r - s_d)),
                 "pre_draft": sigmoid(z),
-                "draft": sigmoid(coef[0] * z + sum(a * b for a, b in zip(coef[1:], d))),
+                **{k: sigmoid(coefs[k][0] * z + sum(a * d[f] for a, f in zip(coefs[k][1:], feats)))
+                   for k, feats in variants.items()},
             }
             for k, p in preds.items():
                 total[k].add(p, y)
@@ -94,6 +102,7 @@ def run_backtest(ds: Dataset, now: int, params: Params = Params()) -> dict:
 
     return {
         "cups": sorted(cups),
+        "draft_features": list(full),
         "models": {k: v.as_dict() for k, v in total.items()},
         "per_cup": {t: {k: {"accuracy": round(s.accuracy, 4), "logloss": round(s.logloss, 4)}
                         for k, s in v.items()} for t, v in per_cup.items()},
@@ -105,7 +114,8 @@ LABELS = {
     "doc": "модель из заметки (состав + зачтённые победы)",
     "roster": "только состав",
     "pre_draft": "состав + форма с учётом соперника (до драфта)",
-    "draft": "+ драфт (герои)",
+    "draft_league": "+ драфт только по лиге",
+    "draft": "+ драфт: лига, мета, матчапы, опыт в рейтинге",
 }
 
 
@@ -113,7 +123,9 @@ def format_report(rep: dict) -> str:
     lines = [f"Кубки: {', '.join(map(str, rep['cups']))}", ""]
     lines.append(f"{'модель':<50} {'матчей':>7} {'угадано':>8} {'logloss':>8}")
     for k, v in rep["models"].items():
-        lines.append(f"{LABELS[k]:<50} {v['matches']:>7} {v['accuracy']:>8.1%} {v['logloss']:>8.4f}")
+        # без внешних данных полный драфт совпадает с драфтом по лиге
+        label = LABELS["draft_league" if k == "draft" and "draft_league" not in rep["models"] else k]
+        lines.append(f"{label:<50} {v['matches']:>7} {v['accuracy']:>8.1%} {v['logloss']:>8.4f}")
     lines.append("")
     lines.append("По кубкам (угадано / logloss): до драфта | с драфтом")
     for t, v in rep["per_cup"].items():

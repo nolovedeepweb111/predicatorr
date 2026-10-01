@@ -63,7 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "backtest":
         from .backtest import format_report, run_backtest
         from .dataset import load_dataset
-        rep = run_backtest(load_dataset(conn), int(time.time()))
+        from .external import ExternalData
+        ext = ExternalData.load(conn) if settings.external_enabled else None
+        rep = run_backtest(load_dataset(conn), int(time.time()), ext=ext)
         print(json.dumps(rep, ensure_ascii=False, indent=1) if args.json else format_report(rep))
         return 0
 

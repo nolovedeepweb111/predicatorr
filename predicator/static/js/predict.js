@@ -7,6 +7,16 @@ import { openHeroPicker } from "./heropicker.js";
 import { openSubDialog } from "./subdialog.js";
 import { openBetForm } from "./betform.js";
 
+const DRAFT_LABELS = {
+  hero_wr: "Сила героев в нашей лиге",
+  comfort: "Опыт игроков на этих героях в лиге",
+  meta: "Мета героев на высоком рейтинге",
+  vs: "Матчапы: герои против героев",
+  with: "Синергия героев внутри команды",
+  pub_exp: "Опыт игроков на этих героях в рейтинге",
+  pub_wr: "Винрейт игроков на этих героях в рейтинге",
+};
+
 const FEATURE_LABELS = {
   gold: "Доля золота игроков",
   elo_max: "Эло сильнейшего",
@@ -215,8 +225,15 @@ export async function render(view, { params, isCurrent }) {
       let heroNote = null;
       if (hero && pr && pr.hero_games !== undefined) {
         const wr = pr.hero_games ? ` · ${fmt.pct(pr.hero_wins / pr.hero_games, 0)} побед` : "";
-        heroNote = h("div", { class: `hero-note ${pr.hero_games >= 5 ? "good" : pr.hero_games === 0 ? "bad" : "muted"}` },
-          `${hero.name}: ${pr.hero_games ? `${nGames(pr.hero_games)} в лиге${wr}` : "ни разу не играл в лиге"}`);
+        const pub = pr.pub
+          ? (pr.pub.games
+            ? `; в рейтинге ${nGames(pr.pub.games)} (за полгода ${pr.pub.games_recent}), ${fmt.pct(pr.pub.wins / pr.pub.games, 0)} побед`
+            : "; в рейтинге на нём не играл")
+          : "";
+        const seasoned = pr.hero_games >= 5 || (pr.pub && pr.pub.games >= 100);
+        const fresh = pr.hero_games === 0 && (!pr.pub || pr.pub.games < 10);
+        heroNote = h("div", { class: `hero-note ${seasoned ? "good" : fresh ? "bad" : "muted"}` },
+          `${hero.name}: ${pr.hero_games ? `${nGames(pr.hero_games)} в лиге${wr}` : "в лиге не играл"}${pub}`);
       } else if (hero) {
         heroNote = h("div", { class: "hero-note muted" }, hero.name);
       }
@@ -289,7 +306,32 @@ export async function render(view, { params, isCurrent }) {
             h("span", { class: result.draft.shift >= 0 ? "good" : "bad" }, ` ${fmt.signedPct(result.draft.shift)}`))
           : h("span", null, "Драфт: выберите героев, чтобы учесть пики"),
         h("span", null, "Честные коэф.: ", h("b", null, `${fmt.odds(result.fair_odds.a)} / ${fmt.odds(result.fair_odds.b)}`))),
+      draftBlock(ta, tb),
       whyBlock(ta, tb));
+  }
+
+  // Из чего сложился драфт: каждый признак — сдвиг вероятности в пунктах.
+  function draftBlock(ta, tb) {
+    const d = result.draft;
+    if (!d || !d.effects) return null;
+    const lean = (v) => (v >= 0 ? ta.name : tb.name);
+    const color = (v) => (v >= 0 ? "var(--team-a)" : "var(--team-b)");
+    const rows = Object.entries(d.effects)
+      .filter(([, v]) => Math.abs(v) >= 0.001)
+      .sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]))
+      .map(([k, v]) => h("div", { class: "factor-row" }, h("span", null, DRAFT_LABELS[k] || k),
+        h("span", { style: { color: color(v) } }, `${(Math.abs(v) * 100).toFixed(1)} п.п. за ${lean(v)}`)));
+    const notes = (d.matchups || []).map((m) => {
+      const a = state.heroById.get(m.a);
+      const b = state.heroById.get(m.b);
+      return h("span", { class: "badge", style: { color: color(m.adv) } },
+        `${a ? a.name : m.a} против ${b ? b.name : m.b}: ${fmt.signedPct(m.adv)}`);
+    });
+    return h("div", { class: "draft-box" },
+      h("h3", null, "Драфт"),
+      rows.length ? rows : h("div", { class: "muted" }, "Драфт почти равный"),
+      notes.length ? h("div", { class: "row", style: { marginTop: "8px", gap: "6px" } },
+        h("span", { class: "muted", style: { fontSize: "12px" } }, "Заметные матчапы:"), notes) : null);
   }
 
   function whyBlock(ta, tb) {
@@ -303,7 +345,6 @@ export async function render(view, { params, isCurrent }) {
           `${t.form.adj >= 0 ? "+" : ""}${t.form.adj.toFixed(2)} · зачтено игр ${t.form.games.toFixed(1)}`)));
       return h("div", null, h("h3", null, team.name), rows);
     };
-    const d = result.draft;
     const rating = (t) => result.teams[t].rating;
     return h("details", { class: "why" },
       h("summary", null, "Почему так"),
@@ -312,10 +353,6 @@ export async function render(view, { params, isCurrent }) {
         "плюс поправка за результаты в текущем кубке с учётом силы соперников. Разница рейтингов ",
         `${(rating("a") - rating("b")).toFixed(2)} → ${fmt.pct(result.pre_draft.p_a)} до драфта.`),
       h("div", { class: "factors" }, side("a", ta), side("b", tb)),
-      d ? h("div", { style: { marginTop: "10px" } },
-        h("h3", null, "Драфт"),
-        h("div", { class: "factor-row" }, h("span", null, "Сила героев в лиге (A − B)"), h("span", null, d.delta.hero_wr.toFixed(2))),
-        h("div", { class: "factor-row" }, h("span", null, "Опыт игроков на своих героях (A − B)"), h("span", null, d.delta.comfort.toFixed(2)))) : null,
       h("div", { style: { marginTop: "10px" } },
         h("h3", null, "Серия из трёх игр"),
         h("div", { class: "factor-row" }, h("span", null, `${ta.name} берёт серию до двух побед`), h("span", null, fmt.pct(result.series.bo3_a))),

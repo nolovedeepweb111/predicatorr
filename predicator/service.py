@@ -11,6 +11,7 @@ from typing import Sequence
 from .config import Settings
 from .dataset import Dataset, load_dataset
 from .db import connect, get_meta
+from .external import ExternalData
 from .features import (ROSTER_FEATURES, History, Imputation, default_imputation, roster_features,
                        sigmoid)
 from .heroes import hero_by_id
@@ -50,13 +51,15 @@ class PredictorService:
     # --- модель ----------------------------------------------------------
 
     def refresh(self, conn: sqlite3.Connection, force: bool = False) -> None:
-        version = get_meta(conn, "data_version", "0")
+        # переобучаемся и на новый бэкап, и на новые внешние данные (мета, матчапы, игроки)
+        version = f'{get_meta(conn, "data_version", "0")}/{get_meta(conn, "external_version", "0")}'
         with self._lock:
             if not force and version == self._version and self._ds is not None:
                 return
             ds = load_dataset(conn)
+            ext = ExternalData.load(conn) if self.settings.external_enabled else None
             try:
-                model = train(ds, int(time.time()))
+                model = train(ds, int(time.time()), ext=ext)
                 error = None
             except RuntimeError as exc:
                 model, error = None, str(exc)
@@ -90,6 +93,7 @@ class PredictorService:
             "trained_on": m.n_matches if m else 0,
             "weights": dict(zip(ROSTER_FEATURES, m.weights)) if m else {},
             "draft_coef": m.draft_coef if m else [],
+            "draft_features": list(m.draft_features) if m else [],
             "data_version": self._version,
         }
 
@@ -214,6 +218,12 @@ class PredictorService:
                     p["hero_wins"] = st.hero_wins.get(hero, 0) if st else 0
                     p["comfort"] = round(comfort(model.hist, acc, hero, model.comfort_center), 3)
                     p["hero_strength"] = round(hero_strength(model.hist, hero, model.params), 3)
+                    ph = model.ext.player_hero(acc, hero) if model.ext is not None else None
+                    if ph is not None:
+                        stats, _ = ph
+                        p["pub"] = {"games": stats.games_career, "wins": stats.wins_career,
+                                    "games_recent": stats.games_recent,
+                                    "wins_recent": stats.wins_recent}
                 players.append(p)
             sides[side] = {"key": key, "name": team.name, "players": players,
                            "picks": [(acc, h) for acc, h in zip(lineup, heroes[:5])],
@@ -224,21 +234,25 @@ class PredictorService:
         draft = None
         if n_heroes:
             draft = draft_delta(model.hist, sides["a"]["picks"], sides["b"]["picks"],
-                                model.params, model.comfort_center)
+                                model.params, model.comfort_center, model.ext, int(time.time()))
         final = model.combine(pre, draft)
 
         def cap(p: float) -> float:
             return min(max(p, 1 - CONFIDENCE_CAP), CONFIDENCE_CAP)
 
         p_pre, p_final = cap(sigmoid(pre)), cap(sigmoid(final))
+        picks = {k: s.pop("picks") for k, s in sides.items()}
         for s in sides.values():
-            s.pop("picks")
             s["rating"] = round(s["rating"], 4)
         out["teams"] = sides
         out["pre_draft"] = {"p_a": round(p_pre, 4), "logit": round(pre, 4)}
         out["draft"] = None if draft is None else {
             "p_a": round(p_final, 4), "heroes": n_heroes,
-            "delta": {"hero_wr": round(draft[0], 4), "comfort": round(draft[1], 4)},
+            "delta": {k: round(v, 4) for k, v in draft.items() if k in model.draft_features},
+            # во что превращается каждый признак: сдвиг вероятности A в п.п. при прочих равных
+            "effects": {k: round(sigmoid(model.draft_coef[0] * pre + v) - sigmoid(model.draft_coef[0] * pre), 4)
+                        for k, v in model.contributions(draft).items()},
+            "matchups": self._matchup_notes(model, picks["a"], picks["b"]),
             "shift": round(p_final - p_pre, 4)}
         out["p_a"] = round(p_final, 4)
         out["winner"] = "a" if p_final >= 0.5 else "b"
@@ -246,14 +260,30 @@ class PredictorService:
         out["series"] = series_probs(p_final)
         return out
 
+    def _matchup_notes(self, model: TrainedModel, a: list, b: list) -> list[dict]:
+        """Самые заметные матчапы драфта (перевес героя A над героем B по высокому рейтингу)."""
+        ext = model.ext
+        if ext is None or not ext.available()["vs"]:
+            return []
+        now = int(time.time())
+        ha = [h for _, h in a if h is not None]
+        hb = [h for _, h in b if h is not None]
+        notes = [{"a": x, "b": y, "adv": round(ext.advantage(x, y, now), 4)} for x in ha for y in hb]
+        notes = [n for n in notes if abs(n["adv"]) >= 0.01]
+        return sorted(notes, key=lambda n: -abs(n["adv"]))[:6]
+
     def hero_table(self) -> list[dict]:
         model = self.model
         out = []
         for h in hero_by_id().values():
             hs = model.hist.heroes.get(h["id"])
+            meta = None
+            if model.ext is not None and model.ext.available()["meta"]:
+                meta = round(sigmoid(model.ext.hero_meta(h["id"], int(time.time()))), 4)
             out.append({"hero_id": h["id"], "games": hs.games if hs else 0,
                         "wins": hs.wins if hs else 0,
                         "strength": round(hero_strength(model.hist, h["id"], model.params), 4),
+                        "meta_wr": meta,
                         "farm_rank": round(hs.rank_sum / hs.games, 2) if hs and hs.games else None})
         return out
 

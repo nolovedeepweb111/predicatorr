@@ -82,6 +82,9 @@ class Settings:
     # Кэш линии PARI в секундах: чаще не дёргаем, даже если страницу обновляют.
     pari_cache_seconds: int = field(default_factory=lambda: int(_env("PARI_CACHE_SECONDS", "60")))
     password: str = field(default_factory=lambda: _env("PREDICATOR_PASSWORD", ""))
+    # Ключ STRATZ для меты и матчапов; можно задать и на сайте (Модель → Источники данных).
+    stratz_token: str = field(default_factory=lambda: _env("STRATZ_TOKEN", ""))
+    external_enabled: bool = field(default_factory=lambda: _env("PREDICATOR_EXTERNAL", "1") == "1")
     host: str = field(default_factory=lambda: _env("PREDICATOR_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: int(_env("PREDICATOR_PORT", "8000")))
 

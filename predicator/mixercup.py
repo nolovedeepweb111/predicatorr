@@ -161,18 +161,21 @@ def sync_api(conn: sqlite3.Connection, api: MixerApi) -> dict[str, Any]:
                 conn.execute("INSERT OR IGNORE INTO live_team_players(tournament_id, team_key,"
                              " account_id, position) VALUES (?,?,?,?)",
                              (global_id, tm["id"], acc, pos))
-        for g in games:
+        # API отдаёт игры от последней по расписанию к первой: сыгранные в конце списка.
+        for i, g in enumerate(games):
             conn.execute(
                 "INSERT INTO live_games(game_id, tournament_id, status, match_id, result,"
-                " team1_key, team2_key, week_number, synced_at) VALUES (?,?,?,?,?,?,?,?,?)"
+                " team1_key, team2_key, week_number, seq, synced_at) VALUES (?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(game_id) DO UPDATE SET status=excluded.status,"
                 " match_id=excluded.match_id, result=excluded.result,"
                 " team1_key=excluded.team1_key, team2_key=excluded.team2_key,"
-                " week_number=excluded.week_number, synced_at=excluded.synced_at",
+                " week_number=excluded.week_number, seq=excluded.seq, synced_at=excluded.synced_at",
                 (str(g["id"]), global_id, g.get("status"),
                  int(g["matchId"]) if g.get("matchId") else None, g.get("result"),
                  (g.get("team1") or {}).get("id"), (g.get("team2") or {}).get("id"),
-                 g.get("weekNumber"), now))
+                 g.get("weekNumber"), len(games) - 1 - i, now))
+        if t.get("name"):
+            set_meta(conn, f"tournament_name_{global_id}", str(t["name"]))
         set_meta(conn, f"mixer_sync_{api.code}", str(now))
     result.update(teams=len(teams), games=len(games), week=week.get("weekNumber") if week else None)
     return result

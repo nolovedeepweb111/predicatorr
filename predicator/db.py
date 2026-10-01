@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS live_games (
     team1_key     TEXT,
     team2_key     TEXT,
     week_number   INTEGER,
+    seq           INTEGER,           -- порядок в расписании: 0 — самая ранняя игра
     synced_at     INTEGER NOT NULL
 );
 
@@ -163,6 +164,46 @@ CREATE TABLE IF NOT EXISTS odds_snapshots (
     PRIMARY KEY (event_id, fetched_at)
 );
 
+-- Внешние данные для драфта (external.py). Мета и матчапы — STRATZ, Divine+Immortal,
+-- по неделям (week — начало недели, unix). История игрока — OpenDota, рейтинговые игры.
+CREATE TABLE IF NOT EXISTS ext_hero_week (
+    hero_id INTEGER NOT NULL,
+    week    INTEGER NOT NULL,
+    matches INTEGER NOT NULL,
+    wins    INTEGER NOT NULL,
+    PRIMARY KEY (hero_id, week)
+);
+
+-- Матрица недели одним куском: float32[SIZE*SIZE], ячейка a*SIZE+b — герой a против
+-- (vs) или вместе с (with) героем b: n — игр, s — игр × перевес в процентных пунктах.
+CREATE TABLE IF NOT EXISTS ext_matchup_week (
+    week INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('vs', 'with')),
+    n    BLOB NOT NULL,
+    s    BLOB NOT NULL,
+    fetched_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (week, kind)
+);
+
+CREATE TABLE IF NOT EXISTS ext_player_hero (
+    account_id   INTEGER NOT NULL,
+    hero_id      INTEGER NOT NULL,
+    games        INTEGER NOT NULL,    -- вся карьера
+    wins         INTEGER NOT NULL,
+    games_recent INTEGER NOT NULL,    -- последние полгода
+    wins_recent  INTEGER NOT NULL,
+    PRIMARY KEY (account_id, hero_id)
+);
+
+CREATE TABLE IF NOT EXISTS ext_player (
+    account_id   INTEGER PRIMARY KEY,
+    fetched_at   INTEGER NOT NULL,
+    games        INTEGER NOT NULL,    -- 0 — история в OpenDota закрыта
+    wins         INTEGER NOT NULL,
+    games_recent INTEGER NOT NULL,
+    wins_recent  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -185,7 +226,20 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+# Колонки, добавленные после первых установок: CREATE TABLE IF NOT EXISTS их не добавит.
+_ADDED_COLUMNS = (("live_games", "seq", "INTEGER"),
+                  ("ext_matchup_week", "fetched_at", "INTEGER NOT NULL DEFAULT 0"))
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, decl in _ADDED_COLUMNS:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 @contextmanager

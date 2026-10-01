@@ -23,7 +23,8 @@ def backup() -> dict:
 @pytest.fixture()
 def settings(tmp_path) -> Settings:
     return replace(Settings(), db_path=tmp_path / "test.sqlite3", pari_hosts=("http://127.0.0.1:9",),
-                   mixer_live=False, sync_minutes=0, password="")
+                   mixer_live=False, sync_minutes=0, password="",
+                   external_enabled=False, stratz_token="")
 
 
 @pytest.fixture()

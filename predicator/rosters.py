@@ -7,7 +7,7 @@ import time
 from dataclasses import asdict, dataclass, field
 
 from .config import series_of
-from .db import transaction
+from .db import get_meta, transaction
 
 LIVE_FRESH_SECONDS = 6 * 3600
 
@@ -42,7 +42,11 @@ class Team:
         return d
 
 
-def tournament_title(tournament_id: int) -> str:
+def tournament_title(tournament_id: int, conn: sqlite3.Connection | None = None) -> str:
+    if conn is not None:
+        name = get_meta(conn, f"tournament_name_{tournament_id}")
+        if name:
+            return name
     api = series_of(tournament_id)
     if api is None:
         return f"Турнир {tournament_id}"
@@ -74,7 +78,7 @@ def tournaments(conn: sqlite3.Connection) -> list[dict]:
         "SELECT tournament_id, COUNT(*), MAX(start_time) FROM matches"
         " WHERE tournament_id IS NOT NULL AND radiant_win IS NOT NULL GROUP BY tournament_id")}
     for tid, row in out.items():
-        row["title"] = tournament_title(tid)
+        row["title"] = tournament_title(tid, conn)
         row["games"], row["last_game"] = games.get(tid, (0, None))
     return sorted(out.values(), key=lambda r: (-int(r.get("live", False)), -r["confirmed"], -r["id"]))
 

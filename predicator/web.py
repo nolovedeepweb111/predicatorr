@@ -21,7 +21,9 @@ from pydantic import BaseModel, Field
 from . import bets as bets_mod
 from .backtest import run_backtest
 from .config import Settings, get_settings
-from .db import connect
+from .db import connect, set_setting
+from .external import coverage as external_coverage
+from .external import stratz_token
 from .heroes import heroes
 from .http import FetchError
 from .pari import PariLine, link_events
@@ -81,6 +83,10 @@ class BetIn(BaseModel):
 
 class BetPatch(BaseModel):
     status: str = Field(..., pattern="^(open|won|lost|void)$")
+
+
+class TokenIn(BaseModel):
+    token: str = Field("", max_length=4000)
 
 
 class SettingsIn(BaseModel):
@@ -158,6 +164,8 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
             "sync": last_sync(conn),
             "sync_running": sync.running,
             "pari": {**pari.status(), "enabled": settings.pari_enabled},
+            "external": {**external_coverage(conn), "enabled": settings.external_enabled,
+                         "stratz_token_set": bool(stratz_token(conn, settings))},
             "default_tournament": default_tournament(conn),
             "now": int(time.time()),
         }
@@ -269,7 +277,7 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
         tid = resolve_tournament(conn, tournament_id)
         rows = conn.execute(
             "SELECT * FROM live_games WHERE tournament_id = ? AND (status IS NULL OR"
-            " status != 'COMPLETE') ORDER BY week_number, game_id", (tid,)).fetchall()
+            " status != 'COMPLETE') ORDER BY status != 'ACTIVE', seq, game_id", (tid,)).fetchall()
         return {"games": [dict(r) for r in rows]}
 
     # --- линия PARI ------------------------------------------------------
@@ -343,6 +351,18 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
             raise HTTPException(404, "ставка не найдена")
         return {"ok": True}
 
+    @app.put("/api/settings/stratz-token")
+    def put_stratz_token(body: TokenIn, conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+        """Ключ STRATZ хранится только на сервере; наружу отдаём лишь «задан / не задан»."""
+        token = body.token.strip()
+        if token:
+            set_setting(conn, "stratz_token", token)
+        else:
+            conn.execute("DELETE FROM settings WHERE key = 'stratz_token'")
+        if sync.is_alive():
+            sync.poke()
+        return {"stratz_token_set": bool(stratz_token(conn, settings))}
+
     @app.get("/api/settings")
     def get_bet_settings(conn: sqlite3.Connection = Depends(get_conn)) -> dict:
         return bets_mod.get_bet_settings(conn)
@@ -359,7 +379,8 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
         key = service.status()["data_version"] or "0"
         if key not in backtest_cache:
             backtest_cache.clear()
-            backtest_cache[key] = run_backtest(service.dataset, int(time.time()))
+            backtest_cache[key] = run_backtest(service.dataset, int(time.time()),
+                                               ext=service.model.ext)
         return {**backtest_cache[key], "model": service.status()}
 
     # --- фронтенд ----------------------------------------------------------

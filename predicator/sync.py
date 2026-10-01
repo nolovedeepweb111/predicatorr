@@ -1,4 +1,4 @@
-"""Фоновое обновление данных: бэкап донора, mixer-cup, закрытие ставок."""
+"""Фоновое обновление данных: бэкап донора, mixer-cup, мета и матчапы, закрытие ставок."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import time
 from .bets import auto_settle
 from .config import Settings
 from .db import connect, get_meta, set_meta
+from .external import refresh_external
 from .http import FetchError
 from .importer import refresh_backup
 from .mixercup import sync_all
@@ -28,6 +29,13 @@ def sync_once(settings: Settings, force_backup: bool = False) -> dict:
         if settings.mixer_live:
             report["mixer"] = sync_all(conn)
         report["settled_bets"] = auto_settle(conn)
+        if settings.external_enabled:
+            # последним: история игроков с OpenDota качается минуту-две
+            try:
+                report["external"] = refresh_external(conn, settings)
+            except Exception as exc:  # noqa: BLE001 — внешние источники не ломают остальное
+                log.exception("external refresh failed")
+                report["external"] = {"error": str(exc)[:300]}
         report["finished_at"] = int(time.time())
         set_meta(conn, "last_sync", json.dumps(report, ensure_ascii=False))
         return report

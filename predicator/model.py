@@ -10,8 +10,11 @@
    k × (результат − ожидание), то есть победа над сильным весит больше победы
    над слабым. Игра засчитывается составу с весом (совпало_человек / 5) ** 2,
    поэтому перебранная команда возвращается к оценке по составу.
-3. Драфт (если герои известны): винрейт героя в лиге и опыт игрока на герое.
-   Логистическая регрессия поверх логита п.1–2.
+3. Драфт (если герои известны): сила героя в лиге и опыт игрока на нём в лиге;
+   мета героев, матчапы и синергии на высоком рейтинге (STRATZ); опыт игрока на
+   герое в рейтинговых играх (OpenDota, старые игры весят меньше). Логистическая
+   регрессия поверх логита п.1–2; внешние признаки на истории считаются только по
+   неделям до матча.
 """
 
 from __future__ import annotations
@@ -21,11 +24,13 @@ from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
 from .dataset import Cup, Dataset, Match
+from .external import EXTERNAL_FEATURES, ExternalData
 from .features import (ROSTER_FEATURES, History, Imputation, default_imputation, logit,
                        roster_features, sigmoid)
 from .linalg import logistic, mean_std, ridge
 
-DRAFT_FEATURES = ("hero_wr", "comfort")
+LEAGUE_FEATURES = ("hero_wr", "comfort")
+ALL_DRAFT_FEATURES = LEAGUE_FEATURES + EXTERNAL_FEATURES
 MIN_GAMES_FOR_COMFORT = 10
 
 
@@ -38,6 +43,9 @@ class Params:
     form_power: float = 2.0
     hero_k: float = 30.0
     draft_l2: float = 1.0
+    # Винрейт на герое в рейтинге (pub_wr) проверен и не взят: поверх опыта на герое
+    # прибавки не даёт. Опыт (pub_exp) — даёт.
+    draft_features: tuple[str, ...] = ("hero_wr", "comfort", "meta", "vs", "with", "pub_exp")
 
 
 # --- слой 1: оценка состава ------------------------------------------------
@@ -190,9 +198,14 @@ def side_draft(hist: History, picks: Sequence[tuple[int | None, int | None]], pa
 
 def draft_delta(hist: History, a: Sequence[tuple[int | None, int | None]],
                 b: Sequence[tuple[int | None, int | None]], params: Params,
-                center: float) -> list[float]:
+                center: float, ext: ExternalData | None = None, t: int = 0) -> dict[str, float]:
+    """Разница признаков драфта A − B. Внешние — на момент t (для истории — время матча)."""
     fa, fb = side_draft(hist, a, params, center), side_draft(hist, b, params, center)
-    return [fa[k] - fb[k] for k in DRAFT_FEATURES]
+    out = {k: fa[k] - fb[k] for k in LEAGUE_FEATURES}
+    out.update(dict.fromkeys(EXTERNAL_FEATURES, 0.0))
+    if ext is not None:
+        out.update(ext.delta(list(a), list(b), t))
+    return out
 
 
 # --- обучение целиком --------------------------------------------------------
@@ -201,17 +214,22 @@ def draft_delta(hist: History, a: Sequence[tuple[int | None, int | None]],
 class TrainedModel:
     params: Params
     weights: list[float]                 # оценка состава, по ROSTER_FEATURES
-    draft_coef: list[float]              # [логит до драфта, *DRAFT_FEATURES]
+    draft_features: tuple[str, ...]      # какие признаки драфта реально в модели
+    draft_coef: list[float]              # [логит до драфта, *draft_features]
     hist: History                        # вся история (для драфта)
     comfort_center: float
     cups_used: list[int]
     n_matches: int
+    ext: ExternalData | None = None
 
-    def combine(self, pre_logit: float, draft: Sequence[float] | None) -> float:
+    def contributions(self, draft: dict[str, float]) -> dict[str, float]:
+        """Вклад каждого признака драфта в логит."""
+        return {f: c * draft.get(f, 0.0) for f, c in zip(self.draft_features, self.draft_coef[1:])}
+
+    def combine(self, pre_logit: float, draft: dict[str, float] | None) -> float:
         if draft is None:
             return pre_logit
-        return self.draft_coef[0] * pre_logit + sum(
-            c * d for c, d in zip(self.draft_coef[1:], draft))
+        return self.draft_coef[0] * pre_logit + sum(self.contributions(draft).values())
 
 
 def match_picks(m: Match, radiant: bool) -> list[tuple[int | None, int | None]]:
@@ -219,10 +237,12 @@ def match_picks(m: Match, radiant: bool) -> list[tuple[int | None, int | None]]:
 
 
 def training_rows(ds: Dataset, cups: dict[int, CupData], params: Params,
-                  loco_weights: dict[int, list[float]]) -> dict[int, tuple[int, float, list[float], float]]:
+                  loco_weights: dict[int, list[float]], ext: ExternalData | None = None,
+                  ) -> dict[int, tuple[int, float, dict[str, float], float]]:
     """По каждой игре кубков: (кубок, логит до драфта вне выборки, драфт, исход).
 
-    Признаки драфта считаются по всем играм строго раньше этой (история растёт по ходу).
+    Признаки драфта считаются по всем играм строго раньше этой (история растёт по ходу),
+    внешние — по неделям до матча.
     """
     pre: dict[int, tuple[int, float]] = {}
     for t, c in cups.items():
@@ -234,7 +254,8 @@ def training_rows(ds: Dataset, cups: dict[int, CupData], params: Params,
     for m in ds.matches:
         if m.match_id in pre:
             center = center_sum / center_n if center_n else 0.0
-            d = draft_delta(hist, match_picks(m, True), match_picks(m, False), params, center)
+            d = draft_delta(hist, match_picks(m, True), match_picks(m, False), params, center,
+                            ext, m.start_time)
             t, z = pre[m.match_id]
             rows[m.match_id] = (t, z, d, 1.0 if m.radiant_win else 0.0)
         if len(m.radiant) == 5 and len(m.dire) == 5:
@@ -255,8 +276,14 @@ def finished_cups(ds: Dataset, now: int, exclude: Iterable[int] = (), min_matche
             and now - c.end > quiet_hours * 3600]
 
 
+def active_features(params: Params, ext: ExternalData | None) -> tuple[str, ...]:
+    """Признаки драфта из настроек, для которых есть данные."""
+    have = ext.available() if ext is not None else {}
+    return tuple(f for f in params.draft_features if f in LEAGUE_FEATURES or have.get(f))
+
+
 def train(ds: Dataset, now: int, params: Params = Params(),
-          exclude: Iterable[int] = ()) -> TrainedModel:
+          exclude: Iterable[int] = (), ext: ExternalData | None = None) -> TrainedModel:
     if not ds.matches:
         raise RuntimeError("истории матчей ещё нет: идёт первая загрузка бэкапа")
     mmr = {a: p.mmr for a, p in ds.players.items()}
@@ -266,11 +293,12 @@ def train(ds: Dataset, now: int, params: Params = Params(),
         raise RuntimeError("для обучения нужно хотя бы два завершённых кубка")
     weights = fit_roster_weights(cups.values(), params)
     loco = {t: fit_roster_weights([c for u, c in cups.items() if u != t], params) for t in cups}
-    rows = training_rows(ds, cups, params, loco)
-    x = [[z, *d] for (_, z, d, _) in rows.values()]
+    rows = training_rows(ds, cups, params, loco, ext)
+    features = active_features(params, ext)
+    x = [[z, *(d[f] for f in features)] for (_, z, d, _) in rows.values()]
     y = [r[3] for r in rows.values()]
     coef = logistic(x, y, l2=params.draft_l2)
     hist = History.build(ds.matches)
-    return TrainedModel(params=params, weights=weights, draft_coef=coef, hist=hist,
-                        comfort_center=mean_comfort(hist), cups_used=sorted(cups),
-                        n_matches=len(rows))
+    return TrainedModel(params=params, weights=weights, draft_features=features, draft_coef=coef,
+                        hist=hist, comfort_center=mean_comfort(hist), cups_used=sorted(cups),
+                        n_matches=len(rows), ext=ext)

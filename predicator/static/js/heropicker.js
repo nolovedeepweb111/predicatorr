@@ -21,8 +21,9 @@ function matchRank(hero, query) {
 }
 
 function heroStat(hero) {
-  if (!hero.games) return "нет игр";
-  return `${fmt.pct(hero.wins / hero.games, 0)} · ${nGames(hero.games)}`;
+  const meta = hero.meta_wr ? `мета ${fmt.pct(hero.meta_wr, 1)}` : null;
+  const league = hero.games ? `лига ${fmt.pct(hero.wins / hero.games, 0)}` : "в лиге не брали";
+  return meta ? `${meta} · ${league}` : (hero.games ? `${fmt.pct(hero.wins / hero.games, 0)} · ${nGames(hero.games)}` : "нет игр");
 }
 
 export function openHeroPicker({ player, current, taken, onPick }) {

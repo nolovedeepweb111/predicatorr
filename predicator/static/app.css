@@ -112,7 +112,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .btn.small { padding: 4px 9px; font-size: 13px; }
 .btn.danger:hover { border-color: var(--bad); color: var(--bad); }
 
-input[type=text], input[type=number], input[type=search], select.input, textarea {
+input[type=text], input[type=number], input[type=search], input[type=password], select.input, textarea {
   background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 7px 10px; width: 100%;
 }
@@ -197,6 +197,8 @@ table.data td.num, table.data th.num { text-align: right; }
 .prob-bar .b { background: var(--team-b); color: #1f1300; justify-content: flex-end; }
 .prob-lines { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
 .prob-lines b { color: var(--text); }
+.draft-box { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
+.draft-box h3 { margin-top: 0; }
 .why { margin-top: 14px; }
 .why summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .why summary:hover { color: var(--text); }
