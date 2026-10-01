@@ -364,7 +364,7 @@ export async function render(view, { params, isCurrent }) {
     const g = liveGame;
     const clock = (t) => `${t < 0 ? "-" : ""}${Math.floor(Math.abs(t) / 60)}:${String(Math.abs(t) % 60).padStart(2, "0")}`;
     const guesses = g.heroes.length - g.assigned;
-    const state = g.before_horn
+    const state = g.game_time === null ? "лобби собирается, драфт ещё не начался" : g.before_horn
       ? `драфт: ${g.picks} из 10 пиков, у игроков ${g.assigned}${guesses ? ` (+${guesses} предварительно)` : ""} · до горна`
       : `идёт игра ${clock(g.game_time)}, счёт ${g.score[0]}:${g.score[1]}`;
     const toggle = h("a", { href: "#", onclick: (e) => {

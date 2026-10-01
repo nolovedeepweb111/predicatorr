@@ -44,7 +44,7 @@ function row(g) {
   const name = (t, fav) => h("div", null, fav ? h("b", null, t.name) : t.name);   // фаворит — жирным
   const when = g.status === "ACTIVE"
     ? h("span", null, h("span", { class: "badge bad" }, "LIVE"), g.live
-      ? h("div", { class: "faint", style: { fontSize: "12px" } }, g.live.before_horn
+      ? h("div", { class: "faint", style: { fontSize: "12px" } }, g.live.game_time === null ? "лобби" : g.live.before_horn
         ? `драфт ${g.live.picks}/10` : `игра ${Math.floor(g.live.game_time / 60)} мин, ${g.live.score[0]}:${g.live.score[1]}`)
       : null)
     : fmt.hm(g.planned_time);
