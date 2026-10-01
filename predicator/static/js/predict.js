@@ -38,6 +38,17 @@ async function pariOdds(force = false) {
   return oddsCache;
 }
 
+// Драфты старше полусуток уже не нужны: игра сыграна. Храним не больше 30 последних.
+const DRAFT_TTL = 12 * 3600 * 1000;
+function freshDrafts(drafts) {
+  const now = Date.now();
+  const live = Object.entries(drafts && typeof drafts === "object" ? drafts : {})
+    .filter(([, d]) => d && d.heroes && Object.keys(d.heroes).length && now - (d.at || 0) < DRAFT_TTL)
+    .sort((x, y) => y[1].at - x[1].at)
+    .slice(0, 30);
+  return Object.fromEntries(live);
+}
+
 function findEvent(odds, a, b) {
   const events = (odds.data && odds.data.events) || [];
   for (const ev of events) {
@@ -53,8 +64,11 @@ export async function render(view, { params, isCurrent }) {
   if (!isCurrent()) return;
   const teams = data.teams.filter((t) => t.players.length > 0);
   const storeKey = `predict:${state.tournamentId}`;
-  const sel = Object.assign({ a: null, b: null, heroes: {}, k_a: null, k_b: null, manualOdds: false },
+  const sel = Object.assign({ a: null, b: null, drafts: {}, k_a: null, k_b: null, manualOdds: false },
     store(storeKey) || {});
+  // Раньше герои хранились по игроку на весь турнир и переезжали в следующую игру команды.
+  delete sel.heroes;
+  sel.drafts = freshDrafts(sel.drafts);
   if (params.get("a")) sel.a = params.get("a");
   if (params.get("b")) sel.b = params.get("b");
   if (params.get("ka")) { sel.k_a = Number(params.get("ka")); sel.k_b = Number(params.get("kb")); sel.manualOdds = false; }
@@ -84,8 +98,19 @@ export async function render(view, { params, isCurrent }) {
     h("div", { class: "stack" }, quickBox, resultBox, h("div", { class: "predict-grid" }, panelA, panelB), oddsBox));
 
   const lineup = (team) => team.players.slice(0, 5).map((p) => p.account_id);
-  const heroesFor = (team) => lineup(team).map((acc) => sel.heroes[acc] ?? null);
-  const takenHeroes = () => new Set(Object.entries(sel.heroes)
+  // Герои выбираются на игру: драфт хранится по паре команд (порядок A/B не важен).
+  const pairKey = () => [sel.a, sel.b].sort().join("|");
+  const draft = () => (sel.drafts[pairKey()] || {}).heroes || {};
+  const setHero = (acc, id) => {
+    const key = pairKey();
+    const d = sel.drafts[key] || (sel.drafts[key] = { at: 0, heroes: {} });
+    if (id) d.heroes[acc] = id;
+    else delete d.heroes[acc];
+    d.at = Date.now();
+    if (!Object.keys(d.heroes).length) delete sel.drafts[key];
+  };
+  const heroesFor = (team) => lineup(team).map((acc) => draft()[acc] ?? null);
+  const takenHeroes = () => new Set(Object.entries(draft())
     .filter(([acc]) => [...lineup(teamByKey(sel.a)), ...lineup(teamByKey(sel.b))].includes(Number(acc)))
     .map(([, hero]) => hero).filter(Boolean));
 
@@ -210,14 +235,13 @@ export async function render(view, { params, isCurrent }) {
           `форма ${tr.form.adj >= 0 ? "+" : ""}${tr.form.adj.toFixed(2)} (${tr.form.wins.toFixed(1)}/${tr.form.games.toFixed(1)})`) : null));
 
     team.players.slice(0, 5).forEach((p) => {
-      const heroId = sel.heroes[p.account_id] ?? null;
+      const heroId = draft()[p.account_id] ?? null;
       const hero = heroId ? state.heroById.get(heroId) : null;
       const pr = playerResult(side, p.account_id);
       const slot = h("button", { type: "button", class: `hero-slot${hero ? " filled" : ""}`,
         title: hero ? `${hero.name} — сменить` : "Выбрать героя",
         onclick: () => openHeroPicker({ player: p, current: heroId, taken: takenHeroes(), onPick: (id) => {
-          if (id) sel.heroes[p.account_id] = id;
-          else delete sel.heroes[p.account_id];
+          setHero(p.account_id, id);
           save();
           paintTeam(panel, side);
           runPredict();
@@ -252,11 +276,11 @@ export async function render(view, { params, isCurrent }) {
       panel.append(h("div", { class: "notice", style: { marginTop: "8px" } },
         "В составе меньше пяти человек. Нажмите «Замена» или дождитесь обновления состава."));
     }
-    const hasHeroes = team.players.some((p) => sel.heroes[p.account_id]);
+    const hasHeroes = team.players.some((p) => draft()[p.account_id]);
     if (hasHeroes) {
       panel.append(h("div", { class: "row", style: { marginTop: "10px", justifyContent: "flex-end" } },
         h("button", { type: "button", class: "btn small ghost", onclick: () => {
-          team.players.forEach((p) => delete sel.heroes[p.account_id]);
+          team.players.forEach((p) => setHero(p.account_id, null));
           save();
           paintTeam(panel, side);
           runPredict();
