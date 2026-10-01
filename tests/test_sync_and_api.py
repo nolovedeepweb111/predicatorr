@@ -95,3 +95,26 @@ def test_password_protection(conn, settings):
     with TestClient(app) as client:
         assert client.get("/api/status").status_code == 401
         assert client.get("/api/status", auth=("me", "secret")).status_code == 200
+
+
+def test_odds_keep_last_prices_while_betting_is_suspended(conn, settings):
+    """В лайве PARI приостанавливает приём и не отдаёт коэффициенты — показываем последние."""
+    from predicator.pari import PariEvent
+    from predicator.rosters import load_teams
+    teams = load_teams(conn, CURRENT_CUP)
+    a, b = teams[0], teams[1]
+    app = create_app(settings, start_sync=False)
+    pari = app.state.pari
+    pari.refresh = lambda force=False: None
+    line = {"k1": 1.6, "k2": 2.3, "blocked": False}
+    pari.dota_events = lambda: [PariEvent(
+        event_id=42, segment="Dota 2. PARI Mixer Cup", team1=a.name, team2=b.name, start_time=0,
+        place="live", k1=line["k1"], k2=line["k2"], blocked=line["blocked"], mixer=True)]
+    with TestClient(app) as client:
+        ev = client.get("/api/odds").json()["events"][0]
+        assert ev["linked"] and ev["k1"] == 1.6 and ev["last"]["k1"] == 1.6
+        line.update(k1=None, k2=None, blocked=True)
+        ev = client.get("/api/odds").json()["events"][0]
+        assert ev["k1"] is None and ev["blocked"]
+        assert (ev["last"]["k1"], ev["last"]["k2"]) == (1.6, 2.3) and ev["last"]["at"] > 0
+        assert ev["opening"] == {"k1": 1.6, "k2": 2.3} and "offer" not in ev

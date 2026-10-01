@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import calendar
 import hmac
 import logging
 import sqlite3
@@ -340,9 +341,16 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
                                  " team2, start_time, k1, k2) VALUES (?,?,?,?,?,?,?)",
                                  (ev["event_id"], now, ev["team1"], ev["team2"], ev["start_time"],
                                   ev["k1"], ev["k2"]))
-                first = conn.execute("SELECT k1, k2 FROM odds_snapshots WHERE event_id = ?"
-                                     " ORDER BY fetched_at LIMIT 1", (ev["event_id"],)).fetchone()
-                ev["opening"] = dict(first) if first else None
+            # В лайве PARI то и дело приостанавливает приём и на это время коэффициентов не
+            # отдаёт: покажем первые и последние, что видели (без расчёта по ним).
+            first = conn.execute("SELECT k1, k2 FROM odds_snapshots WHERE event_id = ?"
+                                 " ORDER BY fetched_at LIMIT 1", (ev["event_id"],)).fetchone()
+            ev["opening"] = dict(first) if first else None
+            latest = conn.execute("SELECT k1, k2, fetched_at FROM odds_snapshots WHERE event_id = ?"
+                                  " ORDER BY fetched_at DESC LIMIT 1", (ev["event_id"],)).fetchone()
+            ev["last"] = None if not latest else {
+                "k1": latest["k1"], "k2": latest["k2"],
+                "at": calendar.timegm(time.strptime(latest["fetched_at"], "%Y-%m-%dT%H:%M:%S"))}
             if not ev["linked"]:
                 continue
             try:

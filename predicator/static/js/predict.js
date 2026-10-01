@@ -27,7 +27,7 @@ const FEATURE_LABELS = {
 let oddsCache = { at: 0, tid: null, data: null, error: null };
 
 async function pariOdds(force = false) {
-  const fresh = Date.now() - oddsCache.at < 60000 && oddsCache.tid === state.tournamentId;
+  const fresh = Date.now() - oddsCache.at < 25000 && oddsCache.tid === state.tournamentId;
   if (fresh && !force) return oddsCache;
   try {
     const data = await api(`/api/odds${qs({ tournament_id: state.tournamentId, refresh: force ? 1 : null })}`);
@@ -225,13 +225,21 @@ export async function render(view, { params, isCurrent }) {
     event = findEvent(odds, sel.a, sel.b);
     if (event && !sel.manualOdds) {
       const { ev, swapped } = event;
-      sel.k_a = swapped ? ev.k2 : ev.k1;
-      sel.k_b = swapped ? ev.k1 : ev.k2;
-      save();
-      runPredict();
+      const k = [swapped ? ev.k2 : ev.k1, swapped ? ev.k1 : ev.k2];
+      if (k[0] !== sel.k_a || k[1] !== sel.k_b) {      // пересчёт — только если линия сдвинулась
+        [sel.k_a, sel.k_b] = k;
+        save();
+        runPredict();
+      }
     }
     paintOdds();
   }
+
+  // Линия обновляется сама: в лайве PARI то приостанавливает приём, то открывает снова.
+  const oddsTimer = setInterval(() => {
+    if (!isCurrent()) { clearInterval(oddsTimer); return; }
+    if (document.visibilityState === "visible") loadOdds();
+  }, 30000);
 
   function setTeam(side, key) {
     liveGame = null;
@@ -464,7 +472,13 @@ export async function render(view, { params, isCurrent }) {
     if (event && !sel.manualOdds) {
       const ev = event.ev;
       const opening = ev.opening ? `, открытие ${fmt.odds(event.swapped ? ev.opening.k2 : ev.opening.k1)} / ${fmt.odds(event.swapped ? ev.opening.k1 : ev.opening.k2)}` : "";
-      source = h("div", { class: "muted" }, `Из линии PARI: ${ev.segment}${ev.place === "live" ? " · LIVE" : ""}${ev.blocked ? " · приём ставок приостановлен" : ""}${opening}`);
+      const paused = ev.blocked || !ev.k1 || !ev.k2;
+      const same = ev.last && ev.opening && ev.last.k1 === ev.opening.k1 && ev.last.k2 === ev.opening.k2;
+      const last = paused && ev.last && !same
+        ? ` · последние ${fmt.odds(event.swapped ? ev.last.k2 : ev.last.k1)} / ${fmt.odds(event.swapped ? ev.last.k1 : ev.last.k2)} (${fmt.ago(ev.last.at)})` : "";
+      source = h("div", { class: "muted" }, `Из линии PARI: ${ev.segment}${ev.place === "live" ? " · LIVE" : ""}${paused ? " · приём ставок приостановлен" : ""}${opening}${last}`,
+        paused ? h("div", { class: "faint", style: { fontSize: "12px" } },
+          "Пока приём закрыт, PARI коэффициентов не показывает. Линия обновляется сама раз в 30 секунд — как только приём откроется, коэффициенты подставятся.") : null);
     } else if (oddsCache.error && !(oddsCache.data && oddsCache.data.events && oddsCache.data.events.length)) {
       source = h("div", { class: "notice" }, h("b", null, "Линия PARI недоступна. "), "Введите коэффициенты вручную. ",
         h("span", { class: "faint" }, oddsCache.error.slice(0, 160)));
