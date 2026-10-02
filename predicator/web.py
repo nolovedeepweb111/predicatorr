@@ -32,6 +32,7 @@ from .rosters import (add_change, default_tournament, delete_change, ensure_loca
                       search_players, tournaments)
 from .service import PredictorService
 from .importer import backup_status
+from . import paper
 from .live import LiveFeed
 from .sync import SyncThread, last_sync, sync_once
 
@@ -112,7 +113,9 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
     async def lifespan(app: FastAPI):
         if start_sync:
             sync.start()
+            threading.Thread(target=paper_loop, daemon=True, name="predicator-paper").start()
         yield
+        paper_stop.set()
         sync.stop()
 
     app = FastAPI(title="Predicatorr", lifespan=lifespan, docs_url="/api/docs",
@@ -368,6 +371,49 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
 
     sync.on_change = lambda report: record_line()
 
+    # --- эксперимент с виртуальными ставками ---------------------------------
+
+    def closing_price(conn: sqlite3.Connection, a: str, b: str, start: int) -> tuple | None:
+        """Последняя цена PARI на игру a — b, записанная до её начала: (k_a, k_b)."""
+        row = conn.execute(
+            "SELECT k1, k2, team1_key FROM odds_snapshots WHERE ((team1_key = ? AND team2_key = ?)"
+            " OR (team1_key = ? AND team2_key = ?)) AND fetched_at <= ? AND start_time BETWEEN ? AND ?"
+            " ORDER BY fetched_at DESC LIMIT 1",
+            (a, b, b, a, time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(start)),
+             start - 4 * 3600, start + 4 * 3600)).fetchone()
+        if not row or not row["k1"] or not row["k2"]:
+            return None
+        return (row["k1"], row["k2"]) if row["team1_key"] == a else (row["k2"], row["k1"])
+
+    def paper_tick() -> float:
+        """Шаг эксперимента; возвращает паузу до следующего (чаще, пока идёт игра)."""
+        conn = connect(settings.db_path)
+        try:
+            service.refresh(conn)
+            tid = default_tournament(conn)
+            if not service.ready or tid is None:
+                return 60
+            events = line_events(conn, tid)[0] if settings.pari_enabled else []
+            lives = service.live_games(conn, tid, live) if live.enabled else []
+
+            def predict(a: str, b: str, **kw) -> float:
+                return service.predict(conn, tid, a, b, **kw)["p_a"]
+            active = paper.step(conn, tid, events, lives, predict,
+                                lambda a, b, start: closing_price(conn, a, b, start))
+            return 20 if active else 60
+        except Exception:  # noqa: BLE001 — эксперимент не должен ронять сайт
+            logging.getLogger("predicator.paper").exception("paper step failed")
+            return 60
+        finally:
+            conn.close()
+
+    paper_stop = threading.Event()
+    app.state.paper_tick = paper_tick
+
+    def paper_loop() -> None:
+        while not paper_stop.is_set():
+            paper_stop.wait(paper_tick())
+
     @app.get("/api/odds")
     def odds(tournament_id: int | None = None, refresh: bool = False,
              conn: sqlite3.Connection = Depends(get_conn)) -> dict:
@@ -494,6 +540,16 @@ def create_app(settings: Settings | None = None, start_sync: bool = True) -> Fas
         if kind == "played":
             return {"tournament_id": tid, **played_games(conn, tid)}
         return {"tournament_id": tid, "games": upcoming_games(conn, tid, max(1, min(limit, 300)))}
+
+    @app.get("/api/paper")
+    def paper_report(conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+        """Эксперимент: банки стратегий, история банка, последние виртуальные ставки."""
+        return paper.report(conn)
+
+    @app.post("/api/paper/reset")
+    def paper_reset(conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+        paper.reset(conn)
+        return {"ok": True}
 
     # --- ставки ------------------------------------------------------------
 

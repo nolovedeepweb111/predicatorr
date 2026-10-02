@@ -201,6 +201,7 @@ table.data td.num, table.data th.num { text-align: right; }
 .live-strip { margin-bottom: 10px; font-size: 13px; color: var(--muted); }
 .result-team { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 2px 0; }
 .hero-row { display: inline-flex; gap: 2px; }
+svg.spark { width: 132px; height: 34px; flex: none; overflow: visible; }
 .hero-mini { width: 34px; height: 19px; object-fit: cover; border-radius: 3px; display: inline-block; }
 span.hero-mini { width: auto; height: auto; font-size: 10px; color: var(--muted); }
 .hero-slot.provisional { outline: 2px dashed var(--team-a); outline-offset: -2px; opacity: 0.85; }

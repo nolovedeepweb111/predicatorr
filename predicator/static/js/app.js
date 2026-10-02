@@ -8,8 +8,9 @@ import * as bets from "./bets.js";
 import * as model from "./model.js";
 import * as schedule from "./schedule.js";
 import * as results from "./results.js";
+import * as paper from "./paper.js";
 
-const routes = { predict, schedule, results, rosters, bets, model };
+const routes = { predict, schedule, results, rosters, bets, paper, model };
 
 export const state = {
   tournamentId: null,

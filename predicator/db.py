@@ -209,6 +209,42 @@ CREATE TABLE IF NOT EXISTS ext_player (
     wins_recent  INTEGER NOT NULL
 );
 
+-- Эксперимент с виртуальными ставками (paper.py): решение по игре принимается один раз
+-- на стратегию и не пересчитывается.
+CREATE TABLE IF NOT EXISTS paper_decisions (
+    strategy   TEXT NOT NULL,
+    game_id    TEXT NOT NULL,
+    decided_at INTEGER NOT NULL,
+    outcome    TEXT NOT NULL,          -- bet | skip
+    odds_a     REAL,
+    odds_b     REAL,
+    prob_a     REAL,
+    PRIMARY KEY (strategy, game_id)
+);
+
+CREATE TABLE IF NOT EXISTS paper_bets (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy      TEXT NOT NULL,
+    game_id       TEXT NOT NULL,
+    tournament_id INTEGER,
+    team_a_key    TEXT,
+    team_b_key    TEXT,
+    team_a        TEXT,
+    team_b        TEXT,
+    pick          TEXT NOT NULL,       -- a | b
+    odds          REAL NOT NULL,
+    stake         REAL NOT NULL,
+    prob          REAL,                -- наша вероятность выбранной стороны
+    book_prob     REAL,                -- букмекера без маржи
+    ev            REAL,
+    stage         TEXT,                -- open | close | draft
+    placed_at     INTEGER NOT NULL,
+    status        TEXT NOT NULL,       -- open | won | lost | void
+    profit        REAL NOT NULL DEFAULT 0,
+    settled_at    INTEGER,
+    details       TEXT
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT

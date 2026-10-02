@@ -21,9 +21,10 @@ JS-модулях без сборки. Интерфейс и тексты — н
 | `predicator/mixercup.py` | GraphQL mixer-cup: активный турнир, команды, игры |
 | `predicator/pari.py` | линия PARI: снимок + изменения, сопоставление названий команд |
 | `predicator/bets.py` | маржа, ожидание, Келли, журнал, автозакрытие ставок |
+| `predicator/paper.py` | эксперимент: семь стратегий виртуальных ставок, решения раз и навсегда, отчёт |
 | `predicator/sync.py` | фоновый поток: быстрый проход раз в 2 мин (бэкап по ETag → mixer-cup → ставки), полный раз в 15 мин (+ внешние данные) |
 | `predicator/web.py` | API и раздача фронтенда |
-| `predicator/static/` | `index.html`, `app.css`, `js/*.js` (страницы predict, schedule, results, rosters, bets, model) |
+| `predicator/static/` | `index.html`, `app.css`, `js/*.js` (страницы predict, schedule, results, rosters, bets, paper, model) |
 | `tests/` | pytest на синтетическом бэкапе (`tests/synthetic.py`), сеть не нужна |
 | `deploy/install.sh` | установка/обновление на сервере: systemd, nginx + Let's Encrypt, пароль |
 | `deploy/update.sh` | автообновление по таймеру: новый коммит → установка → проверка → откат |
@@ -51,6 +52,9 @@ JS-модулях без сборки. Интерфейс и тексты — н
   меняет. Ручки `/api/export/*` pari-mixer закрыты снаружи — ходить на `127.0.0.1:8000`.
 - В лайве перевес считается только до горна и с полным драфтом (`/api/predict`
   спрашивает время игры у pari-mixer сам, клиенту не верит).
+- Решения эксперимента (`paper_decisions`) не пересчитываются: стратегия решает по
+  игре один раз — по тому, что сайт знает в этот момент. Цена «перед началом» —
+  последний снимок линии до `live_games.start_time`.
 - Матч без золота (`Match.has_stats = False`, OpenDota ещё не дозаполнила) идёт в
   результаты, форму и Эло, но не в долю золота и место по фарму (`stat_games`).
 
